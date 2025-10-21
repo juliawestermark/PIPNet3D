@@ -12,6 +12,7 @@ import math
 import numpy as np
 import random
 import pandas 
+import nibabel as nib
 
 import torch
 from torch import Tensor
@@ -29,518 +30,380 @@ from monai.transforms import (
     RandGaussianNoise,
     RandZoom,
     RepeatChannel,
+    LoadImage,
+    EnsureChannelFirst,
+    ScaleIntensity
 )
 
 from sklearn.model_selection import train_test_split
 from sklearn.model_selection import StratifiedKFold
 
 
-def get_raw_mri_brains_directories(
-        dataset_path = "/home/lisadesanti/DeepLearning/ADNI/ADNI_DATASET/ADNI_MRI_NiFTI",
-        metadata_path = "/home/lisadesanti/DeepLearning/ADNI/ADNI_DATASET/ADNI1_Screening_1.5T_8_21_2023.csv",
-        dic_classes = {"CN":0, "MCI":1, "AD":2}):
-    
-    """ Get directories and labels of sMRI images
-    
-    Args:
-        
-        - dataset_path: Path of folder containing input images
-        - metadata_path: Path of folder containing metadata (including image labels) 
-        - dic_classes: Dictionary, "class_name":label of classes considered
-    
-    Returns: 
-        
-        - ndarray of data directories
-        - ndarray of image labels
-        - dict containing: list of subjects, # subjects, # CN/MCI/AD 
-            respectively in training, validation and test set
-
-    """
-    
-    metadata_path = pandas.read_csv(metadata_path)
-    subjs_id = os.listdir(dataset_path)
-    img_directiories_dic = []
-    labels = []
-    
-    for subj_id in subjs_id:
-        
-        subj_path = os.path.join(dataset_path, subj_id)
-        process_types = os.listdir(subj_path)
-        
-        for process_type in process_types:
-            
-            process_path = os.path.join(subj_path, process_type)
-            acq_dates = os.listdir(process_path)
-            
-            for acq_date in acq_dates:
-                
-                acq_path = os.path.join(process_path, acq_date)
-                img_id = os.listdir(acq_path)[0]
-                img_folder = os.path.join(acq_path, img_id)
-                img_file = os.listdir(img_folder)[0]
-                img_directory = os.path.join(img_folder, img_file)
-                # Find image label (cognitive decline level) in metadata file
-                label = metadata_path.loc[metadata_path['Image Data ID'] == img_id]['Group']
-                label = label.to_numpy()[0]
-                
-                img_directory_dic = {"ROOT":dataset_path, 
-                                     "LABEL":label, 
-                                     "SUBJ":subj_id, 
-                                     "PREPROC":process_type, 
-                                     "DATE":acq_date, 
-                                     "EXAM_ID":img_id,
-                                     "FILENAME":img_file}
-                
-                if label in dic_classes.keys():
-		    # Save only image directory according to the classification task performed
-                    img_directiories_dic.append(img_directory_dic)
-                else:
-                    continue
-    
-    # Dataframe of ADNI directories
-    directory_dataframe = pandas.DataFrame(img_directiories_dic)
-    img_num = len(img_directiories_dic)
-
-    X = np.array(directory_dataframe['ROOT']) + \
-        np.array(['/']*img_num) + \
-        np.array(directory_dataframe['SUBJ']) + \
-        np.array(['/']*img_num) + \
-        np.array(directory_dataframe['PREPROC']) + \
-        np.array(['/']*img_num) + \
-        np.array(directory_dataframe['DATE']) + \
-        np.array(['/']*img_num) + \
-        np.array(directory_dataframe['EXAM_ID']) + \
-        np.array(['/']*img_num) + \
-        np.array(directory_dataframe['FILENAME'])
-    y = np.array(directory_dataframe["LABEL"])
-    y = np.array([dic_classes[yi] for yi in y])
-    
-    return X, y
+import logging
+import os
+import pandas as pd
+from sklearn.model_selection import train_test_split
 
 
-def get_mri_brains_paths(
-        dataset_path = "/home/lisadesanti/DeepLearning/ADNI/ADNI_DATASET/ADNI_MRI_preprocessed",
-        metadata_path = "/home/lisadesanti/DeepLearning/ADNI/ADNI_DATASET/ADNI1_Screening_1.5T_8_21_2023.csv",
-        dic_classes = {"CN":0, "MCI":1, "AD":2},
-        set_type = 'train',
-        shuffle = True,
-        n_fold = 5, 
-        current_fold = 1,
-        test_split = 0.2,
-        seed = 42):
-    
-    """ Get a list with directories and labels of the preprocessed sMRI dataset 
-    of the Training/Validation/Test set splitted performing 5-fold 
-    cross-validation
-    
-    Args:
-        
-        - dataset_path: Path of folder containing input images
-        - metadata_path: Path of folder containing metadata (including image labels) 
-        - dic_classes: Dictionary of classes considered, "class_name":label
-        - set_type: str used to identify Training/Validation/Test set:
-            set_type \in {"train", "val", "test"}
-        - current_fold: Current fold 
-        - n_fold: n° fold in kfold validation
-        - test_split: % of split used
-    
-    Returns: 
-        
-        - ndarray of Training/Validation/Test/All data directories
-        - ndarray of image labels
-        - dict containing: list of subjects, # subjects, # CN/MCI/AD 
-            respectively in training, validation and test set
-   
-    """
-    
-    metadata_paths = pandas.read_csv(metadata_path)
-    subjs_id = os.listdir(dataset_path)
-    img_directiories_dic = []
-    labels = []
-    
-    for subj_id in subjs_id:
-        
-        subj_path = os.path.join(dataset_path, subj_id)
-        process_types = os.listdir(subj_path)
-        
-        for process_type in process_types:
-            
-            process_path = os.path.join(subj_path, process_type)
-            acq_dates = os.listdir(process_path)
-            
-            for acq_date in acq_dates:
-                
-                acq_path = os.path.join(process_path, acq_date)
-                img_id = os.listdir(acq_path)[0]
-                img_folder = os.path.join(acq_path, img_id)
-                img_file = os.listdir(img_folder)[0]
-                img_directory = os.path.join(img_folder, img_file)
-                
-                # Find image label (cognitive decline level) in metadata file
-                label = metadata_paths.loc[metadata_paths['Image Data ID'] == img_id]['Group']
-                label = label.to_numpy()[0]
-                # Find patient age in metadata file
-                age = metadata_paths.loc[metadata_paths['Image Data ID'] == img_id]['Age']
-                age = age.to_numpy()[0]
-                
-                img_directory_dic = {"ROOT":dataset_path, "LABEL":label, "SUBJ":subj_id, "PREPROC":process_type, "DATE":acq_date, "EXAM_ID":img_id, "FILENAME":img_file, "AGE":age}
-                
-                if label in dic_classes.keys():
-		            # Save only image directory according to the classification 
-                    # task performed
-                    img_directiories_dic.append(img_directory_dic)
-                else:
-                    continue
-    
-    # Dataframe of ADNI directories
-    directory_dataframe = pandas.DataFrame(img_directiories_dic)
-    all_subj = list(set(directory_dataframe["SUBJ"]))
-    labels = directory_dataframe["LABEL"]
-    ages = directory_dataframe["AGE"]
-    img_num = len(img_directiories_dic)
-    
-    # Split Dataset into Training(+ Valid) and Test set 
-    # Shuffle (reproducible) and select the last 20% of the dataset 
-    X_train_val_df, X_test_df, y_train_val, y_test = train_test_split(
-        directory_dataframe, 
-        labels, 
-        test_size = test_split, 
-        shuffle = True, 
-        random_state = seed, 
-        stratify = labels
-        ); # with shuffle False stratify is not support
-    
-    # Check to not have data (exams) from the same subjects both in the 
-    # training and validation sets
-    subj_train = np.array(X_train_val_df["SUBJ"])
-    subj_test = np.array(X_test_df["SUBJ"])
-    dup_subjects = np.intersect1d(subj_train, subj_test)
+logger = logging.getLogger(__name__)
 
-    # If a subjects has data in both sets move data to the training set
-    for dup_subj in dup_subjects:
+ADNI_PATH = "/home/maia-user/ADNI_complete"
+DATA_PATH = os.path.join(ADNI_PATH, "adni")
+COLLECTION_PATH = os.path.join(ADNI_PATH, "OutputCollection.csv")
+DEMOGRAPHICS_PATH = os.path.join(ADNI_PATH, "participant_demographics.csv")
+DXSUM_PATH = os.path.join(ADNI_PATH, "DXSUM_PDXCONV_ADNIALL.csv")
+MRI_FILENAME = "mri/rescaled_align_norm.nii.gz"
 
-        dup_subj_test = X_test_df.loc[X_test_df["SUBJ"]==dup_subj]
-        id_dup_subj_test = np.array(dup_subj_test.index)
-        to_train = X_test_df.loc[id_dup_subj_test]
+v_map = {
+    "v02": 0,
+    "v04": 3,
+    "v05": 6,
+    "v06": 6,
+    "v11": 12*1,
+    "v21": 12*2,
+    "v31": 12*3,
+    "v41": 12*4,
+    "v51": 12*5,
+}
 
-        # Test set (without duplicated subjects)
-        X_test_df = X_test_df.drop(id_dup_subj_test)
-        X_test_df = X_test_df.sort_values("SUBJ")
-        y_test = X_test_df["LABEL"]
+
+def build_file_path(row: pd.Series) -> str:
+    """Build the file path for a given row in the dataframe."""
+    guid = row["Output collection GUID"]
+    file_path = os.path.join(DATA_PATH, guid, MRI_FILENAME)
+    return file_path
+
+
+def determine_clinical_stage(row: pd.Series) -> str:
+    """Determine the clinical stage based on diagnosis variables."""
+    # Extract diagnosis variables
+    dxcur = row.get("DXCURREN", pd.NA)
+    dxchange = row.get("DXCHANGE", pd.NA)
+    diagnosis = row.get("DIAGNOSIS", pd.NA)
+    
+    # Determine clinical stage based on ADNI3 (DIAGNOSIS)
+    if pd.notna(diagnosis):
+        if diagnosis == 1:
+            return "CN"  # Cognitively Normal
+        elif diagnosis == 2:
+            return "MCI"  # Mild Cognitive Impairment
+        elif diagnosis == 3:
+            return "AD"  # Alzheimer's Disease
         
-        # Training+Validation set (without duplicated subjects)
-        X_train_val_df = pandas.concat([X_train_val_df, to_train], ignore_index=True)
-        X_train_val_df = X_train_val_df.sort_values("SUBJ")
-        y_train_val = X_train_val_df["LABEL"]
+    # Determine clinical stage based on ADNIGO/2 (DXCHANGE)
+    if pd.notna(dxchange):
+        if dxchange in [1, 7, 9]:
+            return "CN"  # Stable/Returned to Normal
+        elif dxchange in [2, 8]:
+            return "MCI"  # Stable/Returned to MCI
+        elif dxchange in [3, 5, 6]:
+            return "AD"  # Stable/Converted to Dementia
+        elif dxchange == 4:
+            return "MCI"  # Conversion to MCI
         
-    # Perform k-fold crossvalidation on the Training + Validation
-    
-    # Create a new index
-    new_index = range(0, 0 + len(X_train_val_df))
-    # Reindex the DataFrame
-    X_train_val_df.index = new_index
-    y_train_val.index = new_index
-    skf = StratifiedKFold(n_splits=n_fold, random_state=None, shuffle=False)
-    
-    kfold_generator = skf.split(X_train_val_df, y_train_val)
+    # Determine clinical stage based on ADNI1 (DXCURREN)
+    if pd.notna(dxcur):
+        if dxcur == 1:
+            return "CN"  # Cognitively Normal
+        elif dxcur == 2:
+            return "MCI"  # Mild Cognitive Impairment
+        elif dxcur == 3:
+            return "AD"  # Alzheimer's Disease
 
-    for i in range(current_fold):
-        
-        # Split into Training and Validation set
-        train_index, val_index = next(kfold_generator)
-        X_train_df  = X_train_val_df.loc[train_index]
-        X_val_df = X_train_val_df.loc[val_index]
-        y_train = y_train_val[train_index]
-        y_val = y_train_val[val_index]
-   
-        # Check to not have data (exams) of the same subjects both in the 
-        # training and test sets
-        subj_train = np.array(X_train_df["SUBJ"])
-        subj_val = np.array(X_val_df["SUBJ"])
-        dup_subjects = np.intersect1d(subj_train, subj_val)
-   
-        # If a subjects has data in both sets move data to the training set
-        # (this is an arbitrary choice)
-        for dup_subj in dup_subjects:
-   
-            dup_subj_val = X_val_df.loc[X_val_df["SUBJ"]==dup_subj]
-            id_dup_subj_val = np.array(dup_subj_val.index)
-            to_train = X_val_df.loc[id_dup_subj_val]
-   
-            # Validation set (without duplicated subjects)
-            X_val_df = X_val_df.drop(id_dup_subj_val)
-            X_val_df = X_val_df.sort_values("SUBJ")
-            y_val = X_val_df["LABEL"]
-            
-            # Training set (without duplicated subjects)
-            X_train_df = pandas.concat([X_train_df, to_train], ignore_index=True)
-            X_train_df = X_train_df.sort_values("SUBJ")
-            y_train = X_train_df["LABEL"]
+    return pd.NA  # If no valid data
 
-    # Check to not have data (exams) from the same subjects both in the 
-    # training and validation sets
-    subj_train = np.array(X_train_df["SUBJ"])
-    subj_val = np.array(X_val_df["SUBJ"])
-    dup_subjects = np.intersect1d(subj_train, subj_val)
 
-    # If a subjects has data in both sets move data to the training set
-    # (this is an arbitrary choice)
-    for dup_subj in dup_subjects:
+def _get_first_entry(subject_data, viscode: str, column: str):
+    entries = subject_data[subject_data["VISCODE2"] == viscode]
+    if entries.empty:
+        return pd.NA
+    if len(entries) > 1:
+        logger.warning("Multiple %s entries for subject %s", viscode, subject_data["individual_id"].iloc[0])
+    return entries.iloc[0][column]
 
-        dup_subj_val = X_val_df.loc[X_val_df["SUBJ"]==dup_subj]
-        id_dup_subj_val = np.array(dup_subj_val.index)
-        to_train = X_val_df.loc[id_dup_subj_val]
 
-        # Vslidation set (without duplicated subjects)
-        X_val_df = X_val_df.drop(id_dup_subj_val)
-        X_val_df = X_val_df.sort_values("SUBJ")
-        y_val = X_val_df["LABEL"]
-        
-        # Training+Validation set (without duplicated subjects)
-        X_train_df = pandas.concat([X_train_df, to_train], ignore_index=True)
-        X_train_df = X_train_df.sort_values("SUBJ")
-        y_train = X_train_df["LABEL"]
+def get_baseline_date_for_subject(subject_id: str, dxsum: pd.DataFrame) -> pd.Timestamp:
+    """Get the baseline date for a given subject ID."""
+    subject_data = dxsum[dxsum["individual_id"] == subject_id]
+    if subject_data.empty:
+        logger.warning(f"No data found for subject {subject_id}.")
+        return pd.NaT
     
-    subj_train = np.array(X_train_df["SUBJ"])
-    n_train = len(X_train_df)
-    train_cn = y_train.tolist().count('CN')
-    train_mci = y_train.tolist().count('MCI')
-    train_ad = y_train.tolist().count('AD')
-    
-    subj_val = np.array(X_val_df["SUBJ"])
-    n_val = len(X_val_df)
-    val_cn = y_val.tolist().count('CN')
-    val_mci = y_val.tolist().count('MCI')
-    val_ad = y_val.tolist().count('AD')
-    
-    subj_test = np.array(X_test_df["SUBJ"])
-    n_test = len(X_test_df)
-    test_cn = y_test.tolist().count('CN')
-    test_mci = y_test.tolist().count('MCI')
-    test_ad = y_test.tolist().count('AD')
-    
-    dataset_info = {"train_subj":subj_train.tolist(),
-                    "n_train":n_train,
-                    "train_cn":train_cn,
-                    "train_mci":train_mci,
-                    "train_ad":train_ad,
-                    "val_subj":subj_val.tolist(),
-                    "n_val":n_val,
-                    "val_cn":val_cn,
-                    "val_mci":val_mci,
-                    "val_ad":val_ad,
-                    "test_subj":subj_test.tolist(),
-                    "n_test":n_test,
-                    "test_cn":test_cn,
-                    "test_mci":test_mci,
-                    "test_ad":test_ad}
-    
-    dup_subjects_train_val = np.intersect1d(subj_train, subj_val)
-    dup_subjects_train_test = np.intersect1d(subj_train, subj_test)
-    dup_subjects_val_test = np.intersect1d(subj_val, subj_test)
-    
-    # Check data leackage issue
-    if len(dup_subjects_train_val) or len(dup_subjects_train_test) or len(dup_subjects_val_test):
-        print('Data Leackage occurred!! ')
-        return
-    
-    X = np.array(directory_dataframe['ROOT']) + np.array(['/']*img_num) + \
-        np.array(directory_dataframe['SUBJ']) +  np.array(['/']*img_num) + \
-        np.array(directory_dataframe['PREPROC']) + np.array(['/']*img_num) + \
-        np.array(directory_dataframe['DATE']) + np.array(['/']*img_num) + \
-        np.array(directory_dataframe['EXAM_ID']) + np.array(['/']*img_num) + \
-        np.array(directory_dataframe['FILENAME'])
-    x_age = np.array(ages)
-    y = np.array(labels)
-    
-    
-    X_train = np.array(X_train_df['ROOT']) + np.array(['/']*n_train) + \
-              np.array(X_train_df['SUBJ']) + np.array(['/']*n_train) + \
-              np.array(X_train_df['PREPROC']) + np.array(['/']*n_train) + \
-              np.array(X_train_df['DATE']) + np.array(['/']*n_train) + \
-              np.array(X_train_df['EXAM_ID']) + np.array(['/']*n_train) + \
-              np.array(X_train_df['FILENAME'])
-    x_age_train = np.array(X_train_df['AGE'])
-    y_train = np.array(y_train)
-    y_train = np.array([dic_classes[yi] for yi in y_train])
-    
-    X_val = np.array(X_val_df['ROOT']) + np.array(['/']*n_val) + \
-            np.array(X_val_df['SUBJ']) + np.array(['/']*n_val) + \
-            np.array(X_val_df['PREPROC']) + np.array(['/']*n_val) + \
-            np.array(X_val_df['DATE']) +  np.array(['/']*n_val) + \
-            np.array(X_val_df['EXAM_ID']) + np.array(['/']*n_val) + \
-            np.array(X_val_df['FILENAME'])
-    x_age_val = np.array(X_val_df['AGE'])
-    y_val = np.array(y_val)
-    y_val = np.array([dic_classes[yi] for yi in y_val])
-    
-    X_test = np.array(X_test_df['ROOT']) + np.array(['/']*n_test) + \
-             np.array(X_test_df['SUBJ']) + np.array(['/']*n_test) + \
-             np.array(X_test_df['PREPROC']) + np.array(['/']*n_test) + \
-             np.array(X_test_df['DATE']) + np.array(['/']*n_test) + \
-             np.array(X_test_df['EXAM_ID']) + np.array(['/']*n_test) + \
-             np.array(X_test_df['FILENAME'])
-    x_age_test = np.array(X_test_df['AGE'])
-    y_test = np.array(y_test)
-    y_test = np.array([dic_classes[yi] for yi in y_test])
+    date = _get_first_entry(subject_data, "bl", "EXAMDATE")
+    if pd.isna(date):
+        date = _get_first_entry(subject_data, "sc", "EXAMDATE")
 
-    # Data shuffling 
-    if shuffle:
-        
-        rng = np.random.default_rng(seed)
-        shuffled_index = np.arange(n_train)
-        rng.shuffle(shuffled_index)
-        # Shuffled dataset
-        X_train = X_train[shuffled_index]
-        x_age_train = x_age_train[shuffled_index]
-        y_train = y_train[shuffled_index]
+    if pd.isna(date):
+        logger.warning(f"No valid baseline/screening date found for subject {subject_id}.")
+        return pd.NaT
+
+    return date
+
+def get_baseline_class_for_subject(subject_id: str, dxsum: pd.DataFrame) -> str:
+    """Get the baseline clinical stage for a given subject ID."""
+    subject_data = dxsum[dxsum["individual_id"] == subject_id]
+    if subject_data.empty:
+        logger.warning(f"No data found for subject {subject_id}.")
+        return "Unknown"
     
-        rng = np.random.default_rng(seed)
-        shuffled_index = np.arange(n_val)
-        rng.shuffle(shuffled_index)
-        # Shuffled dataset
-        X_val = X_val[shuffled_index]                      
-        x_age_val = x_age_val[shuffled_index]
-        y_val = y_val[shuffled_index]
-        
-        rng = np.random.default_rng(seed)
-        shuffled_index = np.arange(n_test)
-        rng.shuffle(shuffled_index)
-        # Shuffled dataset
-        X_test = X_test[shuffled_index]                    
-        x_age_test = x_age_test[shuffled_index]
-        y_test = y_test[shuffled_index]
+    stage = _get_first_entry(subject_data, "bl", "clinical_stage")
+    if pd.isna(stage):
+        stage = _get_first_entry(subject_data, "sc", "clinical_stage")
+
+    if pd.isna(stage):
+        logger.warning(f"No baseline/screening clinical stage for subject {subject_id}.")
+        return "Unknown"
     
-    if set_type == 'train':
-        return X_train, x_age_train, y_train, dataset_info
-    elif set_type == 'val':
-        return X_val, x_age_val, y_val, dataset_info
-    elif set_type == 'test':
-        return X_test, x_age_test, y_test, dataset_info
-    else:
-        return X, x_age, y, dataset_info
-    
+    return stage
+
+
+def get_months_from_baseline(timepoint: str) -> float:
+    """Convert timepoint string to months from baseline."""
+
+    if pd.isna(timepoint):
+        return pd.NA
+    if timepoint in ["sc", "init"]:
+        return 0
+    if timepoint == "bl":
+        return 0
+    if timepoint.startswith("m"):
+        try:
+            return int(timepoint[1:])
+        except ValueError:
+            return pd.NA
+    if timepoint.startswith("y"):
+        try:
+            years = int(timepoint[1:])
+            return years * 12
+        except ValueError:
+            return pd.NA
+    if timepoint.startswith("v"):
+        if timepoint in v_map:
+            return v_map[timepoint]
+    if timepoint in ["tau"]:
+        return pd.NA
+    return pd.NA
+
+
+def get_session_date(row: pd.Series) -> pd.Timestamp:
+    """Calculate the session date based on baseline date and months from baseline."""
+    baseline_date = row["baseline_date"]
+    months_from_bl = row["months_from_baseline"]
+    if pd.isna(baseline_date) or pd.isna(months_from_bl):
+        logger.warning(f"Missing data for row {row.name} for subject {row['individual_id']}: baseline_date={baseline_date}, months_from_baseline={months_from_bl}")
+        # detta är de som är tau istället för tidsperiod
+        return pd.NA
+    try:
+        session_date = baseline_date + pd.DateOffset(months=months_from_bl)
+        return session_date
+    except Exception as e:
+        logger.warning(f"Error calculating session date for row {row.name}: {e}")
+        return pd.NA
+
+
+def setup_mri_dataframe():
+
+    # -- Load csv --
+    csv_output_collection = pd.read_csv(COLLECTION_PATH)
+    csv_dxsum = pd.read_csv(DXSUM_PATH)
+
+    # -- Build filepath and inclusion flags --
+    csv_output_collection["file_path"] = csv_output_collection.apply(build_file_path, axis=1)
+    csv_output_collection["included"] = (
+        (csv_output_collection["Job status"] == "completed")
+        & csv_output_collection["file_path"].apply(os.path.exists)
+        & (csv_output_collection["TimePoint"] != "tau")
+        & csv_output_collection["Individual's ID"].isin(csv_dxsum["PTID"])
+    )
+
+    # -- Prepare mri dataset --
+    mri = csv_output_collection[csv_output_collection["included"]].copy()
+    mri = mri[[
+        "Output collection GUID", 
+        "Individual's ID", 
+        "TimePoint", 
+        "file_path"
+    ]].rename(columns={
+        "Output collection GUID": "exam_id",
+        "Individual's ID": "individual_id",
+        "TimePoint": "time_point"
+    })
+
+    # -- Prepare diagnosis summary --
+    dxsum = csv_dxsum[[
+        "PTID",
+        "EXAMDATE",
+        "USERDATE",
+        "VISCODE", 
+        "VISCODE2",
+        "DXCURREN",
+        "DXCHANGE",
+        "DIAGNOSIS"
+    ]].rename(columns={
+        "PTID": "individual_id",
+    })
+    dxsum["EXAMDATE"] = dxsum["EXAMDATE"].fillna(dxsum["USERDATE"])
+    dxsum["EXAMDATE"] = pd.to_datetime(dxsum["EXAMDATE"], errors='coerce')
+    dxsum["clinical_stage"] = dxsum.apply(determine_clinical_stage, axis=1)
+    dxsum = dxsum.dropna(subset=["clinical_stage"])
+
+    # -- Add baseline info --
+    mri["baseline_date"] = mri["individual_id"].apply(get_baseline_date_for_subject, args=(dxsum,))
+    mri["baseline_class"] = mri["individual_id"].apply(get_baseline_class_for_subject, args=(dxsum,))
+    mri["months_from_baseline"] = mri["time_point"].apply(get_months_from_baseline)
+    mri["est_exam_date"] = mri.apply(get_session_date, axis=1)
+
+    # -- Merge mri with diagnosis info --
+    matched = pd.merge_asof(
+        mri.dropna(subset=["est_exam_date"]).sort_values("est_exam_date"),
+        dxsum[["individual_id", "EXAMDATE", "VISCODE2", "clinical_stage"]]
+            .sort_values("EXAMDATE"),
+        by="individual_id",
+        left_on="est_exam_date",
+        right_on="EXAMDATE",
+        direction="nearest"   
+    ).dropna(subset=["clinical_stage"])
+
+    mri_merged = matched[[
+        "exam_id", 
+        "individual_id", 
+        "EXAMDATE",
+        "baseline_class",
+        "baseline_date",
+        "clinical_stage",
+        "file_path",
+    ]].rename(columns={
+        "EXAMDATE": "exam_date"
+    })
+
+    return mri_merged
+
+def get_small_mri_dataframe():
+    mri = setup_mri_dataframe()
+    small_mri = mri[[
+        "individual_id",
+        "clinical_stage",
+        "file_path",
+    ]].copy()
+    return small_mri
+
+def split_dataset(dataset: pd.DataFrame, test_size, val_size, random_state=42) -> tuple:
+    """Splits the dataset into training, validation and testing sets based on unique subjects."""
+    unique_subjects = dataset["individual_id"].unique()
+    train_val_subjects, test_subjects = train_test_split(unique_subjects, test_size=test_size, random_state=random_state)
+    train_subjects, val_subjects = train_test_split(train_val_subjects, test_size=(val_size / (1-test_size)), random_state=random_state)  # 0.25 x 0.8 = 0.2
+    train_df = dataset[dataset["individual_id"].isin(train_subjects)].copy()
+    val_df = dataset[dataset["individual_id"].isin(val_subjects)].copy()
+    test_df = dataset[dataset["individual_id"].isin(test_subjects)].copy()
+    return train_df, val_df, test_df
+
 
 class AugSupervisedDataset(torch.utils.data.Dataset):
+    def __init__(self,
+                 dataframe,
+                 transform=None,
+                 label_map = {"CN": 0, "MCI": 1, "AD": 2}
+                 ):
+        
+        self.dataframe = dataframe
+        self.transform = transform
+        # self.label_map = label_map
+        self.img_dir = dataframe["file_path"]
+        self.img_labels = dataframe["clinical_stage"]
+        self.subjects = dataframe["individual_id"]
+        self.class_to_idx = label_map
 
-    def __init__(
-            self,
-            dataset_path = "/home/lisadesanti/DeepLearning/ADNI/ADNI_DATASET/ADNI_MRI_preprocessed",
-            metadata_path = "/home/lisadesanti/DeepLearning/ADNI/ADNI_DATASET/ADNI1_Screening_1.5T_8_21_2023.csv",
-            transform = None,
-            set_type = 'train',
-            dic_classes = {'CN':0, 'MCI':1, 'AD':2},
-            n_fold = 5,
-            current_fold = 1,
-            test_split = 0.2,
-            seed = 42):
-        
-        self.set_type = set_type      # tranformation's type
-        
-        dataset = get_mri_brains_paths(
-            dataset_path,
-            metadata_path,
-            dic_classes = dic_classes,
-            set_type = self.set_type,
-            n_fold = n_fold,
-            current_fold = current_fold,
-            test_split = test_split,
-            seed = seed) 
-        
-        self.dataset_used = "t1mri_adni_alzheimer"
-        self.img_dir = dataset[0]      # ndarray with images directories
-        self.img_age = dataset[1]      # ndarray with patient age
-        self.img_labels = dataset[2]   # ndarray with images labels
-        self.dataset_info = dataset[3] # dictionary with dataset info
-        self.transform = transform     # images transformation
-        self.classes = list(dic_classes.keys())
-        self.class_to_idx = dic_classes
-        
-        
+        # MONAI-transform pipeline
+        self.monai_transform = Compose([
+            LoadImage(image_only=True),    # laddar NIfTI som np.array
+            EnsureChannelFirst(),          # lägger till kanal som första dimension (C, D, H, W)
+            ScaleIntensity(),              # normaliserar intensiteten till [0,1]
+        ])
+
     def __len__(self):
-        return len(self.img_labels)
+        return len(self.dataframe)
 
     def __getitem__(self, idx):
-        img_path = self.img_dir[idx]
-        label = self.img_labels[idx]
-        
-        image = np.load(img_path)
-        volume = torch.tensor(image) # torch.Size([160, 229, 193])
-        volume = torch.unsqueeze(volume, 0) # add channel dimension
-        volume = volume.float()
-        
-        if self.transform:
-            volume = self.transform(volume)
-            img_min = volume.min()
-            img_max = volume.max()
-            volume = (volume-img_min)/(img_max-img_min)
+        if torch.is_tensor(idx):
+            idx = idx.tolist()
 
-        return volume, label
+        img_path = self.dataframe.iloc[idx]["file_path"]
+        # image = nib.load(img_path).get_fdata()
+        # image = torch.tensor(image, dtype=torch.float32).unsqueeze(0)
+        image = self.monai_transform(img_path)  # direkt tensor-liknande np.array
+
+        label = self.class_to_idx[self.dataframe.iloc[idx]["clinical_stage"]]
+
+        if self.transform:
+            image = self.transform(image)
+            # img_min = image.min()
+            # img_max = image.max()
+            # image = (image-img_min)/(img_max-img_min)
+        
+        # konvertera till tensor om transform inte redan gör det
+        if not isinstance(image, torch.Tensor):
+            image = torch.tensor(image, dtype=torch.float32)
+
+        return image, label
 
 
 class TwoAugSelfSupervisedDataset(torch.utils.data.Dataset):
-    
-    """ Return two augmentation of the input image """
-
-    def __init__(
-            self,
-            dataset_path = "/home/lisadesanti/DeepLearning/ADNI/ADNI_DATASET/ADNI_MRI_preprocessed",
-            metadata_path = "/home/lisadesanti/DeepLearning/ADNI/ADNI_DATASET/ADNI1_Screening_1.5T_8_21_2023.csv",
-            transform = None,
-            set_type = 'train',
-            dic_classes = {'CN':0,'MCI':1,'AD':2},
-            n_fold = 5,
-            current_fold = 1,
-            test_split = 0.2,
-            seed = 42):
+    def __init__(self,
+                 dataframe,
+                 transform=None,
+                 label_map = {"CN": 0, "MCI": 1, "AD": 2}
+                 ):
         
-        self.set_type = set_type      # tranformation's type
-        
-        dataset = get_mri_brains_paths(
-            dataset_path,
-            metadata_path,
-            dic_classes = dic_classes,
-            set_type = self.set_type,
-            n_fold = n_fold,
-            current_fold = current_fold,
-            test_split = test_split,
-            seed = seed) 
-        
-        self.img_dir = dataset[0]      # ndarray with images directories
-        self.img_labels = dataset[1]   # ndarray with images labels
-        self.dataset_info = dataset[2] # dictionary with dataset info
-        
+        self.dataframe = dataframe
         self.transform1 = transform
         self.transform2 = transform
-        self.classes = list(dic_classes.keys())
-        self.class_to_idx = dic_classes
-        
+        # self.label_map = label_map
+        self.img_dir = dataframe["file_path"]
+        self.img_labels = dataframe["clinical_stage"]
+        self.subjects = dataframe["individual_id"]
+        self.class_to_idx = label_map
+
+        # MONAI-transform pipeline
+        self.monai_transform = Compose([
+            LoadImage(image_only=True),    # laddar NIfTI som np.array
+            EnsureChannelFirst(),          # lägger till kanal som första dimension (C, D, H, W)
+            ScaleIntensity(),              # normaliserar intensiteten till [0,1]
+        ])
+
     def __len__(self):
-        return len(self.img_labels)
+        return len(self.dataframe)
 
     def __getitem__(self, idx):
-        img_path = self.img_dir[idx]
-        label = self.img_labels[idx]
-        
-        image = np.load(img_path).astype(np.float32)
-        volume = torch.tensor(image) # torch.Size([160, 229, 193])
-        volume = torch.unsqueeze(volume, 0) # add channel dimension
-        volume = volume.float()
-        
-        if self.transform1:
-            volume1 = self.transform1(volume)
-            img_min = volume1.min()
-            img_max = volume1.max()
-            volume1 = (volume1-img_min)/(img_max-img_min)
-            
-        if self.transform2:
-            volume2 = self.transform2(volume)
-            img_min = volume2.min()
-            img_max = volume2.max()
-            volume2 = (volume2-img_min)/(img_max-img_min)
+        if torch.is_tensor(idx):
+            idx = idx.tolist()
 
-        return volume1, volume2, label
-    
+        img_path = self.dataframe.iloc[idx]["file_path"]
+        # image = nib.load(img_path).get_fdata()
+        # image = torch.tensor(image, dtype=torch.float32).unsqueeze(0)
+        image = self.monai_transform(img_path)  # direkt tensor-liknande np.array
+
+        label = self.class_to_idx[self.dataframe.iloc[idx]["clinical_stage"]]
+
+        if self.transform1:
+            image1 = self.transform1(image)
+            # img_min = image1.min()
+            # img_max = image1.max()
+            # image1 = (image1-img_min)/(img_max-img_min)
+        if self.transform2:
+            image2 = self.transform2(image)
+            # img_min = image2.min()
+            # img_max = image2.max()
+            # image2 = (image2-img_min)/(img_max-img_min)
+
+        # konvertera till tensor om transform inte redan gör det
+        if not isinstance(image1, torch.Tensor):
+            image1 = torch.tensor(image1, dtype=torch.float32)
+        # konvertera till tensor om transform inte redan gör det
+        if not isinstance(image2, torch.Tensor):
+            image2 = torch.tensor(image2, dtype=torch.float32)
+
+        return image1, image2, label
+
 
 def create_datasets(
         dataset_path: str,
@@ -561,86 +424,57 @@ def create_datasets(
         - valset
         - testset
         - testset_projection """
+    
+    df = setup_mri_dataframe()
+    train_df, val_df, test_df = split_dataset(df, test_size=test_split, val_size=test_split, random_state=seed)
 
     trainset = TwoAugSelfSupervisedDataset(
-        dataset_path = dataset_path,
-        transform = transforms_dic["train"],
-        set_type = "train",
-        dic_classes = dic_classes,
-        n_fold = n_fold,
-        current_fold = current_fold,
-        test_split = test_split,
-        seed = seed)
+        train_df,
+        transform=transforms_dic["train"],
+        label_map = dic_classes
+        )
     
     trainset_pretraining = TwoAugSelfSupervisedDataset(
-        dataset_path = dataset_path,
-        transform = transforms_dic["train"],
-        set_type = "train",
-        dic_classes = dic_classes,
-        n_fold = n_fold,
-        current_fold = current_fold,
-        test_split = test_split,
-        seed = seed)
-        
-    trainset_normal = AugSupervisedDataset(
-        dataset_path = dataset_path,
-        transform = transforms_dic["train_noaug"],
-        set_type = "train",
-        dic_classes = dic_classes,
-        n_fold = n_fold,
-        current_fold = current_fold,
-        test_split = test_split,
-        seed = seed)
+        train_df,
+        transform=transforms_dic["train"],
+        label_map = dic_classes
+        )
     
+    trainset_normal = AugSupervisedDataset(
+        train_df,
+        transform=transforms_dic["train_noaug"],
+        label_map = dic_classes
+        )
+
     trainset_normal_augment = AugSupervisedDataset(
-        dataset_path = dataset_path,
-        transform = transforms_dic["train"],
-        set_type = "train",
-        dic_classes = dic_classes,
-        n_fold = n_fold,
-        current_fold = current_fold,
-        test_split = test_split,
-        seed = seed)
+        train_df,
+        transform=transforms_dic["train"],
+        label_map = dic_classes
+        )
     
     projectset = AugSupervisedDataset(
-        dataset_path = dataset_path,
-        transform = transforms_dic["project_noaug"],
-        set_type = "train",
-        dic_classes = dic_classes,
-        n_fold = n_fold,
-        current_fold = current_fold,
-        test_split = test_split,
-        seed = seed)
+        train_df,
+        transform=transforms_dic["project_noaug"],
+        label_map = dic_classes
+        )
     
     valset = AugSupervisedDataset(
-        dataset_path = dataset_path,
-        transform = transforms_dic["val"],
-        set_type = "val",
-        dic_classes = dic_classes,
-        n_fold = n_fold,
-        current_fold = current_fold,
-        test_split = test_split,
-        seed = seed)
-        
+        val_df,
+        transform=transforms_dic["val"],
+        label_map = dic_classes
+        )
+    
     testset = AugSupervisedDataset(
-        dataset_path = dataset_path,
-        transform = transforms_dic["test"],
-        set_type = "test",
-        dic_classes = dic_classes,
-        n_fold = n_fold,
-        current_fold = current_fold,
-        test_split = test_split,
-        seed = seed)
+        test_df,
+        transform=transforms_dic["test"],
+        label_map = dic_classes
+        )
     
     testset_projection = AugSupervisedDataset(
-        dataset_path = dataset_path,
-        transform = transforms_dic["test_projection"],
-        set_type = "test",
-        dic_classes = dic_classes,
-        n_fold = n_fold,
-        current_fold = current_fold,
-        test_split = test_split,
-        seed = seed)
+        test_df,
+        transform=transforms_dic["test_projection"],
+        label_map = dic_classes
+        )
 
     return trainset, trainset_pretraining, trainset_normal, trainset_normal_augment, projectset, valset, testset, testset_projection 
     

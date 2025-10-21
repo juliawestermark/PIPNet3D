@@ -18,6 +18,7 @@ import pickle
 import random
 import torch.optim
 from datetime import datetime
+import sys
 
 
 
@@ -31,17 +32,22 @@ def get_args(
     Utility functions for handling parsed arguments """
 
     net_dic = {"resnet3D_18_kin400":3, "convnext3D_tiny":1}
-    dic_classes = {"CN":0, "AD":1} 
+    dic_classes = {"CN":0, "MCI": 1, "AD":2} 
     
-    root_folder = "/home/lisadesanti/DeepLearning/ADNI/PIPNet3D/pipnet"
-    dataset_path = "/home/lisadesanti/DeepLearning/ADNI/ADNI_DATASET/ADNI_MRI_preprocessed"
-    metadata_path = "/home/lisadesanti/DeepLearning/ADNI/ADNI_DATASET/ADNI1_Screening_1.5T_8_21_2023.csv"
+    root_folder = "/home/maia-user/PIPNet3D/"
+    dataset_path = root_folder
+    metadata_path = root_folder
+    model_path = os.path.join(root_folder, "pipnet")
+
+    # root_folder = "/home/lisadesanti/DeepLearning/ADNI/PIPNet3D/pipnet"
+    # dataset_path = "/home/lisadesanti/DeepLearning/ADNI/ADNI_DATASET/ADNI_MRI_preprocessed"
+    # metadata_path = "/home/lisadesanti/DeepLearning/ADNI/ADNI_DATASET/ADNI1_Screening_1.5T_8_21_2023.csv"
     
-    n_fold = 5           # Number of fold
-    test_split = 0.2
+    n_fold = 1 # 5 måste utveckla make_dataset om man ska kunna ha flertalet fold.           # Number of fold
+    test_split = 0.4 # 0.2
     seed = 42            # seed for reproducible shuffling
     
-    downscaling = 2
+    downscaling = 4 # 2
     rows = int(229/downscaling)
     cols = int(193/downscaling)
     slices = int(160/downscaling)
@@ -52,10 +58,14 @@ def get_args(
     out_shape = num_classes
     experiment_folder = os.path.join(root_folder, "results", task_performed, net, "fold_" + str(current_fold))
     
+    # if load checkpoint
+    state_dict_dir_net = ""
+    # state_dict_dir_net = os.path.join(experiment_folder, "checkpoints", "best_pipnet_fold1")
+    
     batch_size_pretrain = 12
     batch_size = 12
-    epochs_pretrain = 10
-    epochs = 60
+    epochs_pretrain = 1 #10
+    epochs = 2 #60
     optimizer = "Adam"
     lr = 0.05
     lr_age = 0.1
@@ -63,7 +73,7 @@ def get_args(
     lr_net = 0.0001 #0.0005
     weight_decay = 0.1 #0.0
     num_features = 0
-    freeze_epochs = 10
+    freeze_epochs = 1 #10
     gamma = 0.1             # LR's decay factor
     step_size = 7           # LR's frequency decay
         
@@ -104,7 +114,7 @@ def get_args(
     parser.add_argument('--step_size', type = int, default = step_size, help = 'Learning rate frequency decay')
     parser.add_argument('--disable_cuda', action = 'store_true', help = 'Flag that disables GPU usage if set')
     parser.add_argument('--log_dir', type = str, default = experiment_folder,  help = 'The directory in which train progress should be logged')
-    parser.add_argument('--state_dict_dir_net', type = str, default = '', help = 'The directory containing a state dict with a pretrained PIP-Net. E.g., ./runs/run_pipnet/checkpoints/net_pretrained')
+    parser.add_argument('--state_dict_dir_net', type = str, default = state_dict_dir_net, help = 'The directory containing a state dict with a pretrained PIP-Net. E.g., ./runs/run_pipnet/checkpoints/net_pretrained')
     parser.add_argument('--dir_for_saving_images', type = str, default = 'visualization_results', help = 'Directoy for saving the prototypes and explanations')
     parser.add_argument('--disable_pretrained', action = 'store_true', help = 'When set, the backbone network is initialized with random weights instead of being pretrained on another dataset).')
     parser.add_argument('--weighted_loss', action = 'store_true', help = 'Flag that weights the loss based on the class balance of the dataset. Recommended to use when data is imbalanced. ')
@@ -112,7 +122,8 @@ def get_args(
     parser.add_argument('--num_workers', type = int, default = 2, help = 'Num workers in dataloaders.')
     parser.add_argument('--bias', default = False, action = 'store_true', help = 'Flag that indicates whether to include a trainable bias in the linear classification layer.')
     parser.add_argument('--extra_test_image_folder', type = str, default = './experiments', help = 'Folder with images that PIP-Net will predict and explain, that are not in the training or test set. E.g. images with 2 objects or OOD image. Images should be in subfolder. E.g. images in ./experiments/images/, and argument --./experiments')
-
+    parser.add_argument('--model_path', type = str, default = model_path, help = 'The models folder')
+    
     args = parser.parse_args()
     
     if 'Train' in task_performed:
