@@ -32,7 +32,7 @@ def get_args(
     Utility functions for handling parsed arguments """
 
     net_dic = {"resnet3D_18_kin400":3, "convnext3D_tiny":1}
-    dic_classes = {"CN":0, "MCI": 1, "AD":2} 
+    dic_classes = {"CN":0, "AD":1} # {"CN":0, "MCI": 1, "AD":2} 
     
     root_folder = "/home/maia-user/PIPNet3D/"
     dataset_path = root_folder
@@ -43,8 +43,8 @@ def get_args(
     # dataset_path = "/home/lisadesanti/DeepLearning/ADNI/ADNI_DATASET/ADNI_MRI_preprocessed"
     # metadata_path = "/home/lisadesanti/DeepLearning/ADNI/ADNI_DATASET/ADNI1_Screening_1.5T_8_21_2023.csv"
     
-    n_fold = 1 # 5 måste utveckla make_dataset om man ska kunna ha flertalet fold.           # Number of fold
-    test_split = 0.4 # 0.2
+    n_fold = 1 # TODO: 5 måste utveckla make_dataset om man ska kunna ha flertalet fold.           # Number of fold
+    test_split = 0.2 # 0.2
     seed = 42            # seed for reproducible shuffling
     
     downscaling = 4 # 2
@@ -318,7 +318,7 @@ def init_weights_xavier(m):
             gain = torch.nn.init.calculate_gain('sigmoid'))
   
 
-def get_optimizer_nn(
+def get_optimizer_mm_nn(
         net, 
         args: argparse.Namespace
         ) -> torch.optim.Optimizer:
@@ -328,22 +328,28 @@ def get_optimizer_nn(
     random.seed(args.seed)
     np.random.seed(args.seed)
 
-    # create parameter groups
-    params_to_freeze = []
-    params_to_train = []
-    params_backbone = []
-    
-    # set up optimizer
-    if 'resnet3D_18' or 'convnetx3D_tiny' in args.net:
-        print("Network is ", args.net, flush = True)
-        # Train all the backbone
-        for name, param in net.module._net.named_parameters():
-            params_to_train.append(param)
-    else:
-        print("Network not implemented", flush = True)     
-    
+    params_feature_nets = []
+    params_add_ons = []
     classification_weight = []
     classification_bias = []
+
+    if 'resnet3D_18' or 'convnetx3D_tiny' in args.net:
+        print("Network is ", args.net, flush = True)
+    else:
+        print("Network not implemented", flush = True)
+
+    # Feature extractor parameters
+    for i, net_i in enumerate(net.module._nets):
+            # Train all the backbone
+            for name, param in net_i.named_parameters():
+                params_feature_nets.append(param)
+    
+    # Add-on parameters
+    for i, add_on_i in enumerate(net.module._add_ons):
+        for name, param in add_on_i.named_parameters():
+            params_add_ons.append(param)
+
+    # Classification layer parameters
     for name, param in net.module._classification.named_parameters():
         if 'weight' in name:
             classification_weight.append(param)
@@ -352,21 +358,15 @@ def get_optimizer_nn(
         else:
             if args.bias:
                 classification_bias.append(param)
-    
+
     paramlist_net = [
-            {"params": params_backbone, 
+            {"params": params_feature_nets, 
              "lr": args.lr_net, 
              "weight_decay_rate": args.weight_decay},
-            {"params": params_to_freeze, 
-             "lr": args.lr_block, 
-             "weight_decay_rate": args.weight_decay},
-            {"params": params_to_train, 
-             "lr": args.lr_block, 
-             "weight_decay_rate": args.weight_decay},
-            {"params": net.module._add_on.parameters(), 
+            {"params": params_add_ons, 
              "lr": args.lr_block*10., 
              "weight_decay_rate": args.weight_decay}]
-            
+    
     paramlist_classifier = [
             {"params": classification_weight, 
              "lr": args.lr, 
@@ -374,7 +374,7 @@ def get_optimizer_nn(
             {"params": classification_bias, 
              "lr": args.lr, 
              "weight_decay_rate": 0},]
-          
+
     if args.optimizer == 'Adam':
         optimizer_net = torch.optim.AdamW(
             paramlist_net,
@@ -384,11 +384,11 @@ def get_optimizer_nn(
             paramlist_classifier,
             lr = args.lr,
             weight_decay = args.weight_decay)
-        return optimizer_net, optimizer_classifier, params_to_freeze, params_to_train, params_backbone
-    
+        print("Using Adam optimizer", flush = True)
+        return optimizer_net, optimizer_classifier, params_feature_nets, params_add_ons
     else:
         raise ValueError("this optimizer type is not implemented")
-        
+
 
 def topk_accuracy(output, target, topk=[1,]):
     

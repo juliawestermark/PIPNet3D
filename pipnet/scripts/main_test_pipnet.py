@@ -16,8 +16,8 @@ from copy import deepcopy
 
 from utils import get_args
 from make_dataset import get_dataloaders
-from model_builder import load_trained_pipnet
-from test_model import eval_pipnet
+from model_builder import load_trained_mmpipnet
+from test_model import eval_mmpipnet
 
 from test_model import get_local_explanations
 from test_model import get_thresholds, eval_ood
@@ -33,7 +33,7 @@ backbone_dic = {1:"resnet3D_18_kin400", 2:"convnext3D_tiny"}
 
 current_fold = 1
 net = backbone_dic[1]
-task_performed = "test_pipnet"
+task_performed = "test_mmpipnet"
 
 args = get_args(current_fold, net, task_performed)
 
@@ -64,15 +64,20 @@ test_projectloader = dataloaders[7]
 print("------", flush = True)
 print("PIPNet performances @fold: ", current_fold, flush = True)
     
-pipnet = load_trained_pipnet(args)
+pipnet = load_trained_mmpipnet(args)
 pipnet.eval()
 
 # Get the latent space dimensions (needed for prototypes' visualization)
 with torch.no_grad():
-    xs1, _ = next(iter(testloader))
-    xs1 = xs1.to(device)
-    print("Input shape: ", xs1.shape, flush=True)
-    proto_features, _, _ = pipnet(xs1)
+    # xs1, _ = next(iter(testloader))
+    # xs1 = xs1.to(device)
+    # print("Input shape: ", xs1.shape, flush=True)
+    # proto_features, _, _ = pipnet(xs1)
+    modalities_batch = next(iter(testloader))
+    xs_list = [xs.to(device) for xs in modalities_batch[:-1]]
+    print("Input shape: ", xs_list[0].shape, flush=True)
+    proto_features_list, _, _, _ = pipnet(xs_list)
+    proto_features = proto_features_list[0]
     wshape = proto_features.shape[-1]
     hshape = proto_features.shape[-2]
     dshape = proto_features.shape[-3]
@@ -111,7 +116,7 @@ set_to_zero = []
 if topks:
     for prot in topks.keys():
         found = False
-        for (i_id, score) in topks[prot]:
+        for (i_id, score, mod) in topks[prot]:
             if score > 0.1:
                 found = True
         if not found:
@@ -143,7 +148,7 @@ for c in range(pipnet.module._classification.weight.shape[0]):
 #%% Evaluate PIPNet: 
 #    - Classification performances, 
 #    - Explanations' size
-info = eval_pipnet(
+info = eval_mmpipnet(
     pipnet, 
     testloader, 
     "notused", 
@@ -151,14 +156,14 @@ info = eval_pipnet(
 for elem in info.items():
     print(elem)
     
-# TODO: the code doesnt run past this point, it just stays in this loop
+# TODO: the code takes a looooong time to run here.
 local_explanations_test, y_preds_test, y_trues_test = get_local_explanations(pipnet, testloader, device, args, plot=True)
 
 
 #%% Evaluate the prototypes extracted
 
 columns=["detection_rate", "mean_pcc_d", "mean_pcc_h", "mean_pcc_w", "std_pcc_d", "std_pcc_h", "std_pcc_w", "LC"]
-
+print("\nEvaluation of prototypes on test set:", flush=True)
 ps_test_evaluation = eval_local_explanations(pipnet, local_explanations_test, device, args)
 
 ps_test_detections = ps_test_evaluation[0]
@@ -196,3 +201,6 @@ for percent in [95.]:
     print("class threshold ID fraction (FPR) with percent", percent,":", 
           id_fraction, flush=True)                
 
+# Again print final evaluation info
+for elem in info.items():
+    print(elem)

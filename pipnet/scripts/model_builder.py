@@ -15,31 +15,27 @@ import torch.nn as nn
 
 from utils import get_model_layers
 from utils import set_device
-from utils import get_optimizer_nn
+from utils import get_optimizer_mm_nn
 from pipnet import get_network, PIPNet
+from mmpipnet import MMPIPNet, get_mmpipnet_network
 from convnext_features import convnext_tiny_3d
 
-def load_trained_pipnet(args):
+def load_trained_mmpipnet(args):
     models_folder = "/home/maia-user/PIPNet3D/pipnet/models/binary"
-    # models_folder = "/home/lisadesanti/DeepLearning/ADNI/PIPNet3D/pipnet/models/binary/"
-    model_path = os.path.join(models_folder, args.net, "best_pipnet_fold%s"%str(args.current_fold))
+    model_path = os.path.join(models_folder, args.net, "best_mmpipnet_fold%s"%str(args.current_fold))
 
     device, device_ids = set_device(args)
      
-    # Create 3D-PIPNet
-    network_layers = get_network(args.out_shape, args)
-    feature_net = network_layers[0]
-    add_on_layers = network_layers[1]
-    pool_layer = network_layers[2]
-    classification_layer = network_layers[3]
-    num_prototypes = network_layers[4]
+    # Create MM 3D-PIPNet
+    num_modalities = 1
+    feature_nets, add_on_layers_list, pool_layer, classification_layer, total_num_prototypes = get_mmpipnet_network(args.out_shape, args, num_modalities)
     
-    net = PIPNet(
+    net = MMPIPNet(
         num_classes = args.out_shape,
-        num_prototypes = num_prototypes,
-        feature_net = feature_net,
+        num_prototypes = total_num_prototypes,
+        feature_nets = feature_nets,
         args = args,
-        add_on_layers = add_on_layers,
+        add_on_layers_list = add_on_layers_list,
         pool_layer = pool_layer,
         classification_layer = classification_layer
         )

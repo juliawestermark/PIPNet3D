@@ -201,7 +201,7 @@ def get_session_date(row: pd.Series) -> pd.Timestamp:
         return pd.NA
 
 
-def setup_mri_dataframe():
+def setup_mri_dataframe(classes=["CN", "MCI", "AD"]):
 
     # -- Load csv --
     csv_output_collection = pd.read_csv(COLLECTION_PATH)
@@ -275,8 +275,9 @@ def setup_mri_dataframe():
     ]].rename(columns={
         "EXAMDATE": "exam_date"
     })
+    mri_merged = mri_merged[mri_merged["clinical_stage"].isin(classes)].reset_index(drop=True)
 
-    return mri_merged
+    return mri_merged[:100]  # TODO: remove. for testing purposes, use only first 100 entries
 
 def get_small_mri_dataframe():
     mri = setup_mri_dataframe()
@@ -301,16 +302,17 @@ def split_dataset(dataset: pd.DataFrame, test_size, val_size, random_state=42) -
 class AugSupervisedDataset(torch.utils.data.Dataset):
     def __init__(self,
                  dataframe,
-                 transform=None,
-                 label_map = {"CN": 0, "MCI": 1, "AD": 2}
+                 modalities = ["file_path"],
+                 label_col = "clinical_stage",
+                 label_map = {"CN": 0, "MCI": 1, "AD": 2},
+                 transform=None
                  ):
         
         self.dataframe = dataframe
-        self.transform = transform
-        # self.label_map = label_map
-        self.img_dir = dataframe["file_path"]
-        self.img_labels = dataframe["clinical_stage"]
+        self.modalities = modalities
+        self.label_col = label_col
         self.subjects = dataframe["individual_id"]
+        self.transform = transform
         self.class_to_idx = label_map
 
         # MONAI-transform pipeline
@@ -322,45 +324,56 @@ class AugSupervisedDataset(torch.utils.data.Dataset):
 
     def __len__(self):
         return len(self.dataframe)
+    
+    def _load_and_transform(self, img_path):
+        # image = nib.load(img_path).get_fdata()
+        # image = torch.tensor(image, dtype=torch.float32).unsqueeze(0)
+        image = self.monai_transform(img_path)
+        if self.transform:
+            image = self.transform(image)
+            img_min = image.min()
+            img_max = image.max()
+            image = (image-img_min)/(img_max-img_min)
+        if not isinstance(image, torch.Tensor):
+            image = torch.tensor(image, dtype=torch.float32)
+        return image
 
     def __getitem__(self, idx):
         if torch.is_tensor(idx):
             idx = idx.tolist()
 
-        img_path = self.dataframe.iloc[idx]["file_path"]
-        # image = nib.load(img_path).get_fdata()
-        # image = torch.tensor(image, dtype=torch.float32).unsqueeze(0)
-        image = self.monai_transform(img_path)  # direkt tensor-liknande np.array
+        images = []
+        for modality in self.modalities:
+            img_path = self.dataframe.iloc[idx][modality]
+            image = self._load_and_transform(img_path)
+            images.append(image)
 
-        label = self.class_to_idx[self.dataframe.iloc[idx]["clinical_stage"]]
+        if len(images) == 1:
+            images = images[0]
+        else:
+            images = tuple(images)
 
-        if self.transform:
-            image = self.transform(image)
-            # img_min = image.min()
-            # img_max = image.max()
-            # image = (image-img_min)/(img_max-img_min)
-        
-        # konvertera till tensor om transform inte redan gör det
-        if not isinstance(image, torch.Tensor):
-            image = torch.tensor(image, dtype=torch.float32)
+        label_str = self.dataframe.iloc[idx][self.label_col]
+        label = self.class_to_idx[label_str]
 
-        return image, label
+        return (*images,) if isinstance(images, tuple) else images, label
 
 
 class TwoAugSelfSupervisedDataset(torch.utils.data.Dataset):
     def __init__(self,
                  dataframe,
-                 transform=None,
-                 label_map = {"CN": 0, "MCI": 1, "AD": 2}
+                 modalities = ["file_path"],
+                 label_col = "clinical_stage",
+                 label_map = {"CN": 0, "MCI": 1, "AD": 2},
+                 transform=None
                  ):
         
         self.dataframe = dataframe
+        self.modalities = modalities
+        self.label_col = label_col
+        self.subjects = dataframe["individual_id"]
         self.transform1 = transform
         self.transform2 = transform
-        # self.label_map = label_map
-        self.img_dir = dataframe["file_path"]
-        self.img_labels = dataframe["clinical_stage"]
-        self.subjects = dataframe["individual_id"]
         self.class_to_idx = label_map
 
         # MONAI-transform pipeline
@@ -372,37 +385,44 @@ class TwoAugSelfSupervisedDataset(torch.utils.data.Dataset):
 
     def __len__(self):
         return len(self.dataframe)
+    
+    def _load_and_transform(self, img_path, transform):
+        # image = nib.load(img_path).get_fdata()
+        # image = torch.tensor(image, dtype=torch.float32).unsqueeze(0)
+        image = self.monai_transform(img_path)
+        if transform:
+            image = transform(image)
+            img_min = image.min()
+            img_max = image.max()
+            image = (image-img_min)/(img_max-img_min)
+        if not isinstance(image, torch.Tensor):
+            image = torch.tensor(image, dtype=torch.float32)
+        return image
 
     def __getitem__(self, idx):
         if torch.is_tensor(idx):
             idx = idx.tolist()
 
-        img_path = self.dataframe.iloc[idx]["file_path"]
-        # image = nib.load(img_path).get_fdata()
-        # image = torch.tensor(image, dtype=torch.float32).unsqueeze(0)
-        image = self.monai_transform(img_path)  # direkt tensor-liknande np.array
+        images1 = []
+        images2 = []
+        for modality in self.modalities:
+            img_path = self.dataframe.iloc[idx][modality]
+            image1 = self._load_and_transform(img_path, self.transform1)
+            image2 = self._load_and_transform(img_path, self.transform2)
+            images1.append(image1)
+            images2.append(image2)
+        
+        if len(images1) == 1:
+            images1 = images1[0]
+            images2 = images2[0]
+        else:
+            images1 = tuple(images1)
+            images2 = tuple(images2)
 
-        label = self.class_to_idx[self.dataframe.iloc[idx]["clinical_stage"]]
+        label_str = self.dataframe.iloc[idx][self.label_col]
+        label = self.class_to_idx[label_str]
 
-        if self.transform1:
-            image1 = self.transform1(image)
-            # img_min = image1.min()
-            # img_max = image1.max()
-            # image1 = (image1-img_min)/(img_max-img_min)
-        if self.transform2:
-            image2 = self.transform2(image)
-            # img_min = image2.min()
-            # img_max = image2.max()
-            # image2 = (image2-img_min)/(img_max-img_min)
-
-        # konvertera till tensor om transform inte redan gör det
-        if not isinstance(image1, torch.Tensor):
-            image1 = torch.tensor(image1, dtype=torch.float32)
-        # konvertera till tensor om transform inte redan gör det
-        if not isinstance(image2, torch.Tensor):
-            image2 = torch.tensor(image2, dtype=torch.float32)
-
-        return image1, image2, label
+        return (*images1,) if isinstance(images1, tuple) else images1, (*images2,) if isinstance(images2, tuple) else images2, label
 
 
 def create_datasets(
@@ -425,55 +445,74 @@ def create_datasets(
         - testset
         - testset_projection """
     
-    df = setup_mri_dataframe()
+    df = setup_mri_dataframe(classes=dic_classes.keys())
     train_df, val_df, test_df = split_dataset(df, test_size=test_split, val_size=test_split, random_state=seed)
 
+    modalities = ["file_path"]
+    label_col = "clinical_stage"
+    
     trainset = TwoAugSelfSupervisedDataset(
         train_df,
-        transform=transforms_dic["train"],
-        label_map = dic_classes
+        modalities = modalities,
+        label_col = label_col,
+        label_map = dic_classes,
+        transform=transforms_dic["train"]
         )
     
     trainset_pretraining = TwoAugSelfSupervisedDataset(
         train_df,
-        transform=transforms_dic["train"],
-        label_map = dic_classes
+        modalities = modalities,
+        label_col = label_col,
+        label_map = dic_classes,
+        transform=transforms_dic["train"]
         )
     
     trainset_normal = AugSupervisedDataset(
         train_df,
-        transform=transforms_dic["train_noaug"],
-        label_map = dic_classes
+        modalities = modalities,
+        label_col = label_col,
+        label_map = dic_classes,
+        transform=transforms_dic["train_noaug"]
         )
 
     trainset_normal_augment = AugSupervisedDataset(
         train_df,
-        transform=transforms_dic["train"],
-        label_map = dic_classes
+        modalities = modalities,
+        label_col = label_col,
+        label_map = dic_classes,
+        transform=transforms_dic["train"]
         )
     
     projectset = AugSupervisedDataset(
         train_df,
-        transform=transforms_dic["project_noaug"],
-        label_map = dic_classes
+        modalities = modalities,
+        label_col = label_col,
+        label_map = dic_classes,
+        transform=transforms_dic["project_noaug"]
         )
     
     valset = AugSupervisedDataset(
         val_df,
-        transform=transforms_dic["val"],
-        label_map = dic_classes
+        modalities = modalities,
+        label_col = label_col,
+        label_map = dic_classes,
+        transform=transforms_dic["val"]
         )
     
     testset = AugSupervisedDataset(
         test_df,
-        transform=transforms_dic["test"],
-        label_map = dic_classes
+        modalities = modalities,
+        label_col = label_col,
+        label_map = dic_classes,
+        transform=transforms_dic["test"]
         )
     
     testset_projection = AugSupervisedDataset(
         test_df,
-        transform=transforms_dic["test_projection"],
-        label_map = dic_classes
+        modalities = modalities,
+        label_col = label_col,
+        label_map = dic_classes,
+        transform=transforms_dic["test_projection"]
         )
 
     return trainset, trainset_pretraining, trainset_normal, trainset_normal_augment, projectset, valset, testset, testset_projection 

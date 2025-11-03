@@ -17,17 +17,25 @@ import torch.nn as nn
 
 
 from utils import set_device
-from utils import get_optimizer_nn
+# from utils import get_optimizer_nn
+from utils import get_optimizer_mm_nn
 from utils import init_weights_xavier
 from utils import get_args
 from utils import Log
 from plot_utils import plot_3d_slices
 from make_dataset import get_dataloaders
-from pipnet import get_network, PIPNet
-from train_model import train_pipnet
-from test_model import eval_pipnet
+# from pipnet import get_network, PIPNet
+from mmpipnet import get_mmpipnet_network, MMPIPNet
+# from train_model import train_pipnet
+from train_model import train_mmpipnet
+from test_model import eval_mmpipnet
 from vis_pipnet import visualize_topk
 
+# TODO: implement:
+# - CHECK get_optimizer_mm_nn in utils.py
+# - train_mmpipnet in train_model.py
+# - eval_mmpipnet in test_model.py
+# - visualize_topk for mmpipnet in vis_pipnet.py
 
 
 #%% Global Variables
@@ -37,7 +45,7 @@ backbone_dic = {1:"resnet3D_18_kin400", 2:"convnext3D_tiny"}
 current_fold = 1
 net = backbone_dic[1]
 net_name = net
-task_performed = "train_pipnet_alzheimer_mri"
+task_performed = "train_mmpipnet_alzheimer_mri"
 
 args = get_args(current_fold, net, task_performed)
 
@@ -83,33 +91,52 @@ if not os.path.isdir(model_folder):
 # Set the device
 device, device_ids = set_device(args)
 
-# Create 3D-PIPNet
-network_layers = get_network(args.out_shape, args)
-feature_net = network_layers[0]
-add_on_layers = network_layers[1]
-pool_layer = network_layers[2]
-classification_layer = network_layers[3]
-num_prototypes = network_layers[4]
+# Create MM 3D-PIPNet
+num_modalities = 1 # TODO: Get this value from args
+feature_nets, add_on_layers_list, pool_layer, classification_layer, total_num_prototypes = get_mmpipnet_network(args.out_shape, args, num_modalities)
 
-net = PIPNet(
+net = MMPIPNet(
     num_classes = args.out_shape,
-    num_prototypes = num_prototypes,
-    feature_net = feature_net,
+    num_prototypes = total_num_prototypes,
+    feature_nets = feature_nets,
     args = args,
-    add_on_layers = add_on_layers,
+    add_on_layers_list = add_on_layers_list,
     pool_layer = pool_layer,
     classification_layer = classification_layer
     )
+
+# # Create 3D-PIPNet
+# network_layers = get_network(args.out_shape, args)
+# feature_net = network_layers[0]
+# add_on_layers = network_layers[1]
+# pool_layer = network_layers[2]
+# classification_layer = network_layers[3]
+# num_prototypes = network_layers[4]
+
+# net = PIPNet(
+#     num_classes = args.out_shape,
+#     num_prototypes = num_prototypes,
+#     feature_net = feature_net,
+#     args = args,
+#     add_on_layers = add_on_layers,
+#     pool_layer = pool_layer,
+#     classification_layer = classification_layer
+#     )
     
 net = net.to(device=device)
 net = nn.DataParallel(net, device_ids = device_ids)  
 
-optimizer = get_optimizer_nn(net, args)
-optimizer_net = optimizer[0]
-optimizer_classifier = optimizer[1] 
-params_to_freeze = optimizer[2] 
-params_to_train = optimizer[3] 
-params_backbone = optimizer[4]   
+optimizer_net, optimizer_classifier, params_feature_nets, params_add_ons = get_optimizer_mm_nn(net, args) # TODO: implement get_optimizer_mm_nn in utils.py
+# params_to_train = params_feature_nets
+
+
+# optimizer = get_optimizer_mm_nn(net, args) # TODO: implement get_optimizer_mm_nn in utils.py
+# optimizer_net = optimizer[0]
+# optimizer_classifier = optimizer[1] 
+# params_to_freeze = optimizer[2] 
+# params_to_train = optimizer[3] 
+# params_backbone = optimizer[4]  
+
 
     
 # Initialize or load model
@@ -128,7 +155,7 @@ with torch.no_grad():
         except:
             pass
         
-        if torch.mean(net.module._classification.weight).item() > 1.0 and torch.mean(net.module._classification.weight).item() < 3.0 and torch.count_nonzero(torch.relu(net.module._classification.weight-1e-5)).float().item() > 0.8*(num_prototypes*args.num_classes): 
+        if torch.mean(net.module._classification.weight).item() > 1.0 and torch.mean(net.module._classification.weight).item() < 3.0 and torch.count_nonzero(torch.relu(net.module._classification.weight-1e-5)).float().item() > 0.8*(total_num_prototypes*args.num_classes): 
 
             print("We assume that the classification layer is not yet  trained. We re-initialize it...", flush = True) # e.g. loading a pretrained backbone only
             torch.nn.init.normal_(net.module._classification.weight, mean = 1.0, std = 0.1) 
@@ -142,7 +169,10 @@ with torch.no_grad():
                 optimizer_classifier.load_state_dict(checkpoint['optimizer_classifier_state_dict'])
         
     else:
-        net.module._add_on.apply(init_weights_xavier)
+        add_ons = net.module._add_ons
+        for add_on in add_ons:
+            add_on.apply(init_weights_xavier)
+        # net.module._add_on.apply(init_weights_xavier)
         torch.nn.init.normal_(net.module._classification.weight, mean = 1.0, std = 0.1) 
         
         if args.bias:
@@ -163,10 +193,12 @@ scheduler_net = torch.optim.lr_scheduler.CosineAnnealingLR(
     last_epoch=-1)
 
 # Forward one batch through the backbone to get the latent output size
+# TODO: check if all modalities have same shape
 with torch.no_grad():
-    xs1, _, _ = next(iter(trainloader))
-    xs1 = xs1.to(device)
-    proto_features, _, _ = net(xs1)
+    modalities_batch = next(iter(trainloader))
+    xs_list = [xs.to(device) for xs in modalities_batch[:net.module._num_modalities]]
+    proto_features_list, _, _, _ = net(xs_list)
+    proto_features = proto_features_list[0]
     wshape = proto_features.shape[-1]
     hshape = proto_features.shape[-2]
     dshape = proto_features.shape[-3]
@@ -195,22 +227,28 @@ lrs_pretrain_net = []
 #%% 3D-PIPNet Training
 
 #%% PHASE (1): Pretraining Prototypes
+# params_to_train = params_feature_nets
 for epoch in range(1, args.epochs_pretrain+1):
-    for param in params_to_train:
+    for param in params_feature_nets:
         param.requires_grad = True
-    for param in net.module._add_on.parameters():
-        param.requires_grad = True
+    for add_on in net.module._add_ons:
+        for param in add_on.parameters():
+            param.requires_grad = True
+    # for param in net.module._add_on.parameters():
+    #     param.requires_grad = True
     for param in net.module._classification.parameters():
         param.requires_grad = False
-    for param in params_to_freeze:
-        param.requires_grad = True  # can be set to False when you want to freeze more layers
-    for param in params_backbone:
-        param.requires_grad = False # can be set to True when you want to train whole backbone (e.g. if dataset is very different from ImageNet)
+    # for param in params_to_train:
+    #     param.requires_grad = True
+    # for param in params_to_freeze:
+    #     param.requires_grad = True  # can be set to False when you want to freeze more layers
+    # for param in params_backbone:
+    #     param.requires_grad = False # can be set to True when you want to train whole backbone (e.g. if dataset is very different from ImageNet)
     
     print("\nPretrain Epoch", epoch, "with batch size", trainloader_pretraining.batch_size, flush = True)
     
     # Pretrain prototypes
-    train_info = train_pipnet(
+    train_info = train_mmpipnet(
         net, 
         trainloader_pretraining, 
         optimizer_net, 
@@ -244,12 +282,15 @@ with torch.no_grad():
 #%% PHASE (2): Training PIPNet
 
 # Re-initialize optimizers and schedulers for second training phase
-optimizer = get_optimizer_nn(net, args)
-optimizer_net = optimizer[0]
-optimizer_classifier = optimizer[1] 
-params_to_freeze = optimizer[2] 
-params_to_train = optimizer[3] 
-params_backbone = optimizer[4] 
+# optimizer = get_optimizer_mm_nn(net, args)
+# optimizer_net = optimizer[0]
+# optimizer_classifier = optimizer[1] 
+# params_to_freeze = optimizer[2] 
+# params_to_train = optimizer[3] 
+# params_backbone = optimizer[4]
+optimizer_net, optimizer_classifier, params_feature_nets, params_add_ons = get_optimizer_mm_nn(net, args)
+# paramsn_to_train = params_feature_nets
+
         
 scheduler_net = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer_net, T_max = len(trainloader)*args.epochs, eta_min = args.lr_net/100.)
 
@@ -271,17 +312,22 @@ lrs_classifier = []
 ba_val_old = 0 # balanced accuracy in validation set
    
 for epoch in range(1, args.epochs + 1): 
-                 
+    
     epochs_to_finetune = 3  # during finetuning, only train classification layer and freeze rest. usually done for a few  epochs (at least 1, more depends on size of  dataset)
     if epoch <= epochs_to_finetune and (args.epochs_pretrain > 0 or args.state_dict_dir_net != ''):
-        for param in net.module._add_on.parameters():
+        for add_on in net.module._add_ons:
+            for param in add_on.parameters():
+                param.requires_grad = False
+        # for param in net.module._add_on.parameters():
+        #     param.requires_grad = False
+        # for param in params_to_train:
+        #     param.requires_grad = False
+        for param in params_feature_nets:
             param.requires_grad = False
-        for param in params_to_train:
-            param.requires_grad = False
-        for param in params_to_freeze:
-            param.requires_grad = False
-        for param in params_backbone:
-            param.requires_grad = False
+        # for param in params_to_freeze:
+        #     param.requires_grad = False
+        # for param in params_backbone:
+        #     param.requires_grad = False
         finetune = True
     
     else: 
@@ -289,25 +335,33 @@ for epoch in range(1, args.epochs + 1):
         if frozen:
             # unfreeze backbone
             if epoch > (args.freeze_epochs):
-                for param in net.module._add_on.parameters():
+                for add_on in net.module._add_ons:
+                    for param in add_on.parameters():
+                        param.requires_grad = True
+                # for param in net.module._add_on.parameters():
+                #     param.requires_grad = True
+                for param in params_feature_nets:
                     param.requires_grad = True
-                for param in params_to_freeze:
-                    param.requires_grad = True
-                for param in params_to_train:
-                    param.requires_grad = True
-                for param in params_backbone:
-                    param.requires_grad = True   
+                # for param in params_to_freeze:
+                #     param.requires_grad = True
+                # for param in params_to_train:
+                #     param.requires_grad = True
+                # for param in params_backbone:
+                #     param.requires_grad = True   
                 frozen = False
             # freeze first layers of backbone, train rest
             else:
-                for param in params_to_freeze:
-                    param.requires_grad = True # Can be set to False if you want to train fewer layers of backbone
-                for param in net.module._add_on.parameters():
-                    param.requires_grad = True
-                for param in params_to_train:
-                    param.requires_grad = True
-                for param in params_backbone:
-                    param.requires_grad = False
+                # for param in params_to_freeze:
+                #     param.requires_grad = True # Can be set to False if you want to train fewer layers of backbone
+                for add_on in net.module._add_ons:
+                    for param in add_on.parameters():
+                        param.requires_grad = True
+                # for param in net.module._add_on.parameters():
+                #     param.requires_grad = True
+                # for param in params_to_train:
+                #     param.requires_grad = True
+                # for param in params_backbone:
+                #     param.requires_grad = False
     
     print("\n Epoch", epoch, "frozen:", frozen, flush = True)  
       
@@ -322,7 +376,7 @@ for epoch in range(1, args.epochs + 1):
                 print("Classifier bias: ", net.module._classification.bias, flush = True)
             torch.set_printoptions(profile = "default")
     
-    train_info = train_pipnet(
+    train_info = train_mmpipnet(
         net, 
         trainloader, 
         optimizer_net, 
@@ -342,7 +396,7 @@ for epoch in range(1, args.epochs + 1):
     
     # Evaluate model
 
-    eval_info = eval_pipnet(net, valloader, epoch, device, log)
+    eval_info = eval_mmpipnet(net, valloader, epoch, device, log) # TODO: implement eval_mm_pipnet in test_model.py
     log.log_values('log_epoch_overview',  epoch, eval_info['top1_accuracy'], eval_info['top3_accuracy'], eval_info['almost_sim_nonzeros'], eval_info['local_size_all_classes'], eval_info['almost_nonzeros'], eval_info['num non-zero prototypes'], train_info['train_accuracy'], train_info['loss'])
     ba_val = eval_info["balanced_accuracy"]
     
@@ -353,9 +407,9 @@ for epoch in range(1, args.epochs + 1):
         if ba_val >= ba_val_old: 
             # Save pipnet weights which obtained highest balanced accuracy in the validation set
             net.eval()
-            torch.save({'model_state_dict': net.state_dict(), 'optimizer_net_state_dict': optimizer_net.state_dict(), 'optimizer_classifier_state_dict': optimizer_classifier.state_dict()}, os.path.join(os.path.join(args.log_dir, 'checkpoints'), 'best_pipnet_fold%s'%str(current_fold)))
+            torch.save({'model_state_dict': net.state_dict(), 'optimizer_net_state_dict': optimizer_net.state_dict(), 'optimizer_classifier_state_dict': optimizer_classifier.state_dict()}, os.path.join(os.path.join(args.log_dir, 'checkpoints'), 'best_mmpipnet_fold%s'%str(current_fold)))
 
-            model_folder_kfold = os.path.join(model_folder, 'best_pipnet_fold%s'%str(current_fold))
+            model_folder_kfold = os.path.join(model_folder, 'best_mmpipnet_fold%s'%str(current_fold))
             torch.save({'model_state_dict': net.state_dict(), 'optimizer_net_state_dict': optimizer_net.state_dict(), 'optimizer_classifier_state_dict': optimizer_classifier.state_dict()}, model_folder_kfold)
 
         if epoch%30 == 0:
@@ -381,14 +435,14 @@ set_to_zero = []
 if topks:
     for prot in topks.keys():
         found = False
-        for (i_id, score) in topks[prot]:
+        for (i_id, score, mod) in topks[prot]:
             if score > 0.1:
                 found = True
         if not found:
             torch.nn.init.zeros_(net.module._classification.weight[:,prot])
             set_to_zero.append(prot)
     print("Weights of prototypes", set_to_zero, "are set to zero because it is never detected with similarity>0.1 in the training set", flush=True)   
-    eval_info = eval_pipnet(net, testloader, "notused" + str(args.epochs), device, log)
+    eval_info = eval_mmpipnet(net, testloader, "notused" + str(args.epochs), device, log)
     log.log_values('log_epoch_overview', "notused"+str(args.epochs), eval_info['top1_accuracy'], eval_info['top3_accuracy'], eval_info['almost_sim_nonzeros'], eval_info['local_size_all_classes'], eval_info['almost_nonzeros'], eval_info['num non-zero prototypes'], "n.a.", "n.a.")
 
 print("Classifier weights: ", net.module._classification.weight, flush = True)

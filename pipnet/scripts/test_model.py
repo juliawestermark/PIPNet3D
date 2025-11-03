@@ -29,7 +29,7 @@ from plot_utils import plot_3d_slices, plot_rgb_slices, generate_rgb_array
     
 
 @torch.no_grad()
-def eval_pipnet(
+def eval_mmpipnet(
         net,
         test_loader: DataLoader,
         epoch,
@@ -58,17 +58,19 @@ def eval_pipnet(
     
     # Show progress on progress bar
     test_iter = tqdm(enumerate(test_loader), total=len(test_loader), desc=progress_prefix+' %s'%epoch, mininterval=5., ncols=0)
-    (xs, ys) = next(iter(test_loader))
+    (*xs_list, ys) = next(iter(test_loader))
     
     # Iterate through the test set
-    for i, (xs, ys) in test_iter:
+    for i, (*xs_list, ys) in test_iter:
         
-        xs, ys = xs.to(device), ys.to(device)
+        # xs, ys = xs.to(device), ys.to(device)
+        ys = ys.to(device)
+        xs = [x.to(device) for x in xs_list]
         
         with torch.no_grad():
 
             # Use the model to classify this batch of input data
-            _, pooled, out = net(xs, inference = True)
+            _, pooled, _, out = net(xs, inference = True)
             max_out_score, ys_pred = torch.max(out, dim=1) # max, max_idx
             ys_pred_scores = torch.amax(F.softmax((torch.log1p(out**net.module._classification.normalization_multiplier)), dim = 1), dim = 1) # class confidence scores
             abstained += (max_out_score.shape[0] - torch.count_nonzero(max_out_score))  
@@ -200,8 +202,17 @@ def get_local_explanations(
     
     patchsize, skip_z, skip_y, skip_x = get_patch_size(args)
 
-    imgs = [(img, label, sub) for img, label, sub in zip(projectloader.dataset.img_dir, projectloader.dataset.img_labels, projectloader.dataset.subjects)]
-    
+    # imgs = [(img, label, sub) for img, label, sub in zip(projectloader.dataset.img_dir, projectloader.dataset.img_labels, projectloader.dataset.subjects)]
+    df = projectloader.dataset.dataframe
+    modalities = projectloader.dataset.modalities
+    label_col = projectloader.dataset.label_col
+    imgs = []
+    for idx, row in df.iterrows():
+        img_paths = [row[mod] for mod in modalities]
+        label = row[label_col]
+        subject = row['individual_id']
+        imgs.append((img_paths, label, subject))
+
     # Make sure the model is in evaluation mode
     net.eval()
     classification_weights = net.module._classification.weight
@@ -209,10 +220,13 @@ def get_local_explanations(
     img_iter = enumerate(iter(projectloader))
     count = 0
     
-    for k, (xs, ys) in img_iter: # shuffle is false so should lead to same order as in imgs
+    for k, (*xs_list, ys) in img_iter: # shuffle is false so should lead to same order as in imgs
         
-        xs, ys = xs.to(device), ys.to(device)
-        img = imgs[k][0]
+        print("Processing image %s/%s"%(str(k+1), str(len(projectloader.dataset))), flush=True)
+        # xs, ys = xs.to(device), ys.to(device)
+        ys = ys.to(device)
+        xs_list = [x.to(device) for x in xs_list]
+        img_paths = imgs[k][0]
         sub = imgs[k][2]
         
         local_explanation = dict() # dict of all detected prototypes
@@ -221,7 +235,7 @@ def get_local_explanations(
             
             # NOTE: inference=True -> ignore prototypes with similarity < 0.1
             # (elements of pooled < 0.1 are set to 0)
-            softmaxes, pooled, out = net(xs, inference=True) # softmaxes: (1,num_ps,d,h,w)
+            softmaxes_list, pooled, modality_indices, out = net(xs_list, inference=True) # softmaxes: (1,num_ps,d,h,w)
                                                              # pooled:    (bs,num_ps), 
                                                              # out:       (bs,num_classes)
             sorted_out, sorted_out_indices = torch.sort(out.squeeze(0), descending=True) # (num_classes)
@@ -249,7 +263,12 @@ def get_local_explanations(
                         if (c_weight > 1e-10):
                             
                             # get the coordinate of the maximum in the feature's space
-                            max_hw, max_idx_hw = torch.max(softmaxes[0, prototype_idx, :, :, :], dim=0) # (d,h,w)->(h,w)
+                            # TODO: Get softmaxes from the correct modality
+                            global_prototype_idx = prototype_idx.item()
+                            modality_idx = modality_indices[global_prototype_idx].item()
+                            local_proto_idx = (modality_indices[:global_prototype_idx] == modality_idx).sum().item()
+                            softmaxes = softmaxes_list[modality_idx]
+                            max_hw, max_idx_hw = torch.max(softmaxes[0, local_proto_idx, :, :, :], dim=0) # (d,h,w)->(h,w)
                             max_h, max_idx_h = torch.max(max_hw, dim=0) # (h,w)->(w)
                             max_w, max_idx_w = torch.max(max_h, dim=0)  # (w)->(1)
 
@@ -258,6 +277,7 @@ def get_local_explanations(
                             d_idx = max_idx_hw[h_idx, w_idx].item()
                             
                             # img_np = np.expand_dims(np.load(img),axis=0)
+                            img = img_paths[modality_idx]
                             img_nib = nib.load(img)
                             img_np = img_nib.get_fdata(dtype=np.float32)
                             img_np = np.expand_dims(img_np, axis=0)
@@ -274,7 +294,7 @@ def get_local_explanations(
                                 patchsize, skip_z, skip_y, skip_x,
                                 d_idx, h_idx, w_idx)
                             
-                            local_explanation[prototype_idx.item()] = (ps_coord, simweight)
+                            local_explanation[prototype_idx.item()] = (ps_coord, simweight, modality_idx)
                             
         local_explanations.append(local_explanation)
         title = "Prediction " + str(ys_pred.item()) + "\n Detected PS: " + str(local_explanation.keys())
@@ -282,17 +302,19 @@ def get_local_explanations(
         if plot:
             if count % 1000 == 0:
                 subj = sub
-                pattern_exam = r"/adni/([^/]+)/mri/"
-                img_name_exam = re.search(pattern_exam, img)
-                if img_name_exam:
-                    exam = img_name_exam.group(1)  # bara själva ID:t
-                else:
-                    exam = None
+                # pattern_exam = r"/adni/([^/]+)/mri/"
+                # img_name_exam = re.search(pattern_exam, img)
+                # if img_name_exam:
+                #     exam = img_name_exam.group(1)  # bara själva ID:t
+                # else:
+                #     exam = None
                 
-                ps_name = subj + "_" + exam
-                plot_name = ps_name + ".png"
+                # ps_name = subj + "_" + exam
+                ps_name = subj + "_img" + str(k)
+                plot_name = ps_name # + ".png"
                 plot_path = os.path.join(plot_dir, plot_name)
-                plot_local_explanation(xs.cpu(), local_explanation, title=title, save_path=plot_path)
+                xs_list_cpu = [xs.cpu() for xs in xs_list]
+                plot_local_explanation(xs_list_cpu, local_explanation, title=title, save_path=plot_path)
         
         count += 1
         
@@ -316,6 +338,7 @@ def eval_local_explanations(
     ps_scores = {ps:[] for ps in relevant_ps}
     
     for i, local_explanation in enumerate(local_explanations):
+        print("Processing explanation %s/%s"%(str(i+1), str(len(local_explanations))), flush=True)
         
         proto_found = list(local_explanation.keys())
         proto_found.sort()
@@ -423,12 +446,14 @@ def get_thresholds(net,
     test_iter = iter(test_loader)
     
     # Iterate through the test set
-    for i, (xs, ys) in enumerate(test_iter):
-        xs, ys = xs.to(device), ys.to(device)
+    for i, (*xs_list, ys) in enumerate(test_iter):
+        xs_list = [x.to(device) for x in xs_list]
+        ys = ys.to(device)
+        # xs, ys = xs.to(device), ys.to(device)
         
         with torch.no_grad():
             # Use the model to classify this batch of input data
-            _, pooled, out = net(xs)
+            _, pooled, _, out = net(xs_list)
 
             ys_pred = torch.argmax(out, dim=1)
             for pred in range(len(ys_pred)):
@@ -521,12 +546,14 @@ def eval_ood(net,
     test_iter = iter(test_loader)
     
     # Iterate through the test set
-    for i, (xs, ys) in enumerate(test_iter):
-        xs, ys = xs.to(device), ys.to(device)
+    for i, (*xs_list, ys) in enumerate(test_iter):
+        # xs, ys = xs.to(device), ys.to(device)
+        xs_list = [x.to(device) for x in xs_list]
+        ys = ys.to(device)
         
         with torch.no_grad():
             # Use the model to classify this batch of input data
-            _, pooled, out = net(xs)
+            _, pooled, _, out = net(xs_list)
             max_out_score, ys_pred = torch.max(out, dim=1)
             ys_pred = torch.argmax(out, dim=1)
             abstained += (max_out_score.shape[0] - torch.count_nonzero(max_out_score))

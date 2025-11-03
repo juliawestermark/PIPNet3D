@@ -120,6 +120,8 @@ def visualize_topk(
     if plot:
         if not os.path.exists(plot_dir):
             os.makedirs(plot_dir)
+    
+
 
     near_imgs_dirs = dict()
     seen_max = dict()
@@ -143,7 +145,16 @@ def visualize_topk(
     
     patchsize, skip_z, skip_y, skip_x = get_patch_size(args)
 
-    imgs = [(img, label, sub) for img, label, sub in zip(projectloader.dataset.img_dir, projectloader.dataset.img_labels, projectloader.dataset.subjects)]
+    df = projectloader.dataset.dataframe
+    modalities = projectloader.dataset.modalities
+    label_col = projectloader.dataset.label_col
+    imgs = []
+    for idx, row in df.iterrows():
+        img_paths = [row[mod] for mod in modalities]
+        label = row[label_col]
+        subject = row['individual_id']
+        imgs.append((img_paths, label, subject))
+    # imgs = [(img, label, sub) for img, label, sub in zip(projectloader.dataset.img_dir, projectloader.dataset.img_labels, projectloader.dataset.subjects)]
     
     # Make sure the model is in evaluation mode
     net.eval()
@@ -157,18 +168,22 @@ def visualize_topk(
     topks = dict()
     
     # Iterate through the training set
-    for i, (xs, ys) in img_iter:
+    for i, (*xs_list, ys) in img_iter:
         
         print("Search top%s"%str(k)," activated images for each relevant prototypes,", "current image", i, flush=True)
         images_seen += 1
-        xs, ys = xs.to(device), ys.to(device)
+        # xs, ys = xs.to(device), ys.to(device)
+        ys = ys.to(device)
+        if isinstance(xs_list, torch.Tensor):
+            xs_list = [xs_list]
+        xs_list = [xs.to(device) for xs in xs_list]
 
         with torch.no_grad():
             
             # Use the model to classify this batch of input data
-            pfs, pooled, _ = net(xs, inference = True)
+            pfs, pooled, modality_indices, _ = net(xs_list, inference = True)
             pooled = pooled.squeeze(0)      # [ps]
-            pfs = pfs.squeeze(0)            # [ps,d,h,w] 
+            #pfs = pfs.squeeze(0)            # [ps,d,h,w] 
             
             for p in range(pooled.shape[0]):
                 c_weight = torch.max(classification_weights[:, p]) 
@@ -184,13 +199,13 @@ def visualize_topk(
                         # Add to topks:
                         # - image index in projectloader of xs
                         # - prototype presence score of p in xs
-                        topks[p].append((i, pooled[p].item())) 
+                        topks[p].append((i, pooled[p].item(), modality_indices[p].item())) 
                         
                     else:
                         # check what are the most activated images for the prototype p
                         topks[p] = sorted(topks[p], key = lambda tup: tup[1], reverse = True)
                         if topks[p][-1][1] < pooled[p].item():
-                            topks[p][-1] = (i, pooled[p].item())
+                            topks[p][-1] = (i, pooled[p].item(), modality_indices[p].item())
                             
                         if topks[p][-1][1] == pooled[p].item():
                             # equal scores. randomly chose one (since dataset 
@@ -198,7 +213,7 @@ def visualize_topk(
                             # can now also get in topk).
                             replace_choice = random.choice([0, 1])
                             if replace_choice > 0:
-                                topks[p][-1] = (i, pooled[p].item())
+                                topks[p][-1] = (i, pooled[p].item(), modality_indices[p].item())
 
     alli = [] # index of input images which have the topk activation with similarity>0.1 for each relevant prototype
     prototypes_not_used = []
@@ -207,7 +222,7 @@ def visualize_topk(
     for p in topks.keys():
         found = False
         
-        for idx, score in topks[p]:
+        for idx, score, mod in topks[p]:
             alli.append(idx)
             
             if score > 0.1:  
@@ -224,14 +239,18 @@ def visualize_topk(
 
     img_iter = enumerate(iter(projectloader))
 
-    for i, (xs, ys) in img_iter:
+    for i, (*xs_list, ys) in img_iter:
         
         print("Localize each relevant prototype with similarity > 0.1 as a", "patch of the topk activated images in the training set,", i, flush=True)
         
         # shuffle is false so should lead to same order as in imgs
         if i in alli:
             
-            xs, ys = xs.to(device), ys.to(device)
+            # xs, ys = xs.to(device), ys.to(device)
+            ys = ys.to(device)
+            if isinstance(xs_list, torch.Tensor):
+                xs_list = [xs_list]
+            xs_list = [xs.to(device) for xs in xs_list]
             
             # visualize only relevant prototypes (weights connection > 0 at least for one class)
             for p in topks.keys():
@@ -239,18 +258,19 @@ def visualize_topk(
                 # visualize only prototypes detected with similarity > 0.1
                 if p not in prototypes_not_used:
                     
-                    for idx, score in topks[p]:
+                    for idx, score, mod in topks[p]:
                         
                         if idx == i:
                             # Use the model to classify this batch of input data
                             with torch.no_grad():
 
-                                softmaxes, pooled, out = net(xs, inference = True) # softmaxes: (1,ps,d,h,w)                 
+                                softmaxes_list, pooled, _, out = net(xs_list, inference = True) # softmaxes: (1,ps,d,h,w)                 
                                 outmax = torch.amax(out, dim=1)[0]  # outmax: ([1]) as projectloader's bs=1 
                                 if outmax.item() == 0.:
                                     abstained += 1
                             
                             # Take the maximum per prototype in feature's space for image xs
+                            softmaxes = softmaxes_list[mod]
                             max_per_prototype, max_idx_per_prototype = torch.max(softmaxes, dim=0) # (ps,d,h,w)
                             max_per_prototype_hw, max_idx_per_prototype_hw = torch.max(max_per_prototype, dim=1) # (ps,h,w)
                             max_per_prototype_h, max_idx_per_prototype_h = torch.max(max_per_prototype_hw, dim=1) # (ps,w)
@@ -265,13 +285,13 @@ def visualize_topk(
                                 d_idx = max_idx_per_prototype_hw[p,max_idx_per_prototype_h[p, max_idx_per_prototype_w[p]], max_idx_per_prototype_w[p]].item()
                                 h_idx = max_idx_per_prototype_h[p, max_idx_per_prototype_w[p]].item()
                                 w_idx = max_idx_per_prototype_w[p].item()
-                                img_to_open = imgs[i]
+                                img_to_open = imgs[i]  # imgs[i] = (img_paths, label, subject)
                                 sub_id = ""
                                 
                                 if isinstance(img_to_open, tuple) or isinstance(img_to_open, list): 
                                     # dataset contains tuples of (img, label)
                                     sub_id = img_to_open[2]
-                                    img_to_open = img_to_open[0]
+                                    img_to_open = img_to_open[0][mod] # get the path of the modality 'mod'
                                 
                                 img_nib = nib.load(img_to_open)
                                 img_np = img_nib.get_fdata(dtype=np.float32)
@@ -307,11 +327,12 @@ def visualize_topk(
     print("Abstained: ", abstained, flush = True)
     all_tensors = []
     
+    count_p = 0
     for p in range(net.module._num_prototypes):
         
         # print("Plot prototypes", p, flush=True)
         
-        if saved[p] > 0:
+        if saved[p] > 0 and count_p % 100 == 0:
             
             text = "f_" + str(args.current_fold) + " p_" + str(p)
             count = 0
@@ -349,15 +370,16 @@ def visualize_topk(
                 image = img_tensor.detach().cpu().numpy() # shape: (1, 3, slices, rows, cols)
                 
                 subj = sub_id
-                pattern_exam = r"/adni/([^/]+)/mri/"
-                img_name_exam = re.search(pattern_exam, img_name)
-                if img_name_exam:
-                    exam = img_name_exam.group(1)
-                else:
-                    exam = None
+                # pattern_exam = r"/adni/([^/]+)/mri/"
+                # img_name_exam = re.search(pattern_exam, img_name)
+                # img_name_exam = subj
+                # if img_name_exam:
+                #     exam = img_name_exam.group(1)
+                # else:
+                #     exam = None
                 
-                ps_name = subj + "_" + exam
-                ps_patch_name = "patch_" + subj + "_" + exam
+                ps_name = subj + "_proto" + p
+                ps_patch_name = "patch_" + subj + "_proto" + p
 
                 plot_name = ps_name + ".png"
                 plot_patch_name = ps_patch_name + ".png"
@@ -376,13 +398,14 @@ def visualize_topk(
                     all_tensors += tensors_per_prototype[p]
                 
                 count += 1
+            count_p += 1
 
         
     return topks, img_prototype, proto_coord
 
 
 
-def plot_local_explanation(xs, local_explanation, title="", save_path=""):
+def plot_local_explanation(xs_list, local_explanation, title="", save_path=""):
     """
     Mark all the detected relevant prototypes in xs with a volume of 
     interest 
@@ -400,53 +423,66 @@ def plot_local_explanation(xs, local_explanation, title="", save_path=""):
                     class predicted
          - title: str """
     
+    num_modalities = len(xs_list)
     num_ps = len(local_explanation.keys())
     rgb_colors = generate_rgb_array(num_ps)
     ps_scores = []
 
+    modality_prototypes = {m: [] for m in range(num_modalities)}
     for i, (ps_idx, ps) in enumerate(local_explanation.items()):
-        
-        ps_coord = ps[0]
-        ps_score = ps[1]
+        ps_coord, ps_score, mod_idx = ps
+        modality_prototypes[mod_idx].append((ps_coord, ps_score, rgb_colors[i]))
         ps_scores.append((ps_score, rgb_colors[i]))
-        
-        d_min = ps_coord[0]
-        d_max = ps_coord[1]
-        h_min = ps_coord[2]
-        h_max = ps_coord[3]
-        w_min = ps_coord[4]
-        w_max = ps_coord[5]
-        
-        # Create a binary mask for the cube's edges
-        edges_mask_r = torch.zeros_like(xs)
-        erosion_mask_r = torch.zeros_like(xs)
-        
-        edges_mask_g = torch.zeros_like(xs)
-        erosion_mask_g = torch.zeros_like(xs)
-        
-        edges_mask_b = torch.zeros_like(xs)
-        erosion_mask_b = torch.zeros_like(xs)
-        
-        edges_mask_r[:, 0, d_min:d_max+1, h_min:h_max+1, w_min:w_max+1] = 1
-        erosion_mask_r[:, 0, d_min+1:d_max, h_min+2:h_max-2, w_min+2:w_max-1] = 1
-        edges_mask_r = edges_mask_r - erosion_mask_r
-        edges_mask_r = (edges_mask_r > 0).to(dtype=torch.bool)
-        
-        edges_mask_g[:, 1, d_min:d_max+1, h_min:h_max+1, w_min:w_max+1] = 1
-        erosion_mask_g[:, 1, d_min+1:d_max, h_min+2:h_max-1, w_min+2:w_max-1] = 1
-        edges_mask_g = edges_mask_g - erosion_mask_g
-        edges_mask_g = (edges_mask_g > 0).to(dtype=torch.bool)
-        
-        edges_mask_b[:, 2, d_min:d_max+1, h_min:h_max+1, w_min:w_max+1] = 1
-        erosion_mask_b[:, 2, d_min+1:d_max, h_min+2:h_max-1, w_min+2:w_max-1] = 1
-        edges_mask_b = edges_mask_b - erosion_mask_b
-        edges_mask_b = (edges_mask_b > 0).to(dtype=torch.bool)
-        
-        xs[edges_mask_r] = rgb_colors[i][0]
-        xs[edges_mask_g] = rgb_colors[i][1]
-        xs[edges_mask_b] = rgb_colors[i][2]
-        
-        
-    plot_rgb_slices(np.array(xs[0,:,:,:,:]), title=title, legend=ps_scores, save_path=save_path)
+
+    # for i, (ps_idx, ps, mod_idx) in enumerate(local_explanation.items()):
+    for mod_idx, xs in enumerate(xs_list):
+        xs = xs.clone()
+        modality_ps = modality_prototypes[mod_idx]
+        # for i, ps_idx, ps, rgb_color in modality_ps:
+        for (ps_coord, ps_score, rgb_color) in modality_ps:
+            
+            # ps_coord = ps[0]
+            # ps_score = ps[1]
+            # ps_modality = ps[2]
+            # ps_scores.append((ps_score, rgb_color))
+            
+            d_min = ps_coord[0]
+            d_max = ps_coord[1]
+            h_min = ps_coord[2]
+            h_max = ps_coord[3]
+            w_min = ps_coord[4]
+            w_max = ps_coord[5]
+            
+            # Create a binary mask for the cube's edges
+            edges_mask_r = torch.zeros_like(xs)
+            erosion_mask_r = torch.zeros_like(xs)
+            
+            edges_mask_g = torch.zeros_like(xs)
+            erosion_mask_g = torch.zeros_like(xs)
+            
+            edges_mask_b = torch.zeros_like(xs)
+            erosion_mask_b = torch.zeros_like(xs)
+            
+            edges_mask_r[:, 0, d_min:d_max+1, h_min:h_max+1, w_min:w_max+1] = 1
+            erosion_mask_r[:, 0, d_min+1:d_max, h_min+2:h_max-2, w_min+2:w_max-1] = 1
+            edges_mask_r = edges_mask_r - erosion_mask_r
+            edges_mask_r = (edges_mask_r > 0).to(dtype=torch.bool)
+            
+            edges_mask_g[:, 1, d_min:d_max+1, h_min:h_max+1, w_min:w_max+1] = 1
+            erosion_mask_g[:, 1, d_min+1:d_max, h_min+2:h_max-1, w_min+2:w_max-1] = 1
+            edges_mask_g = edges_mask_g - erosion_mask_g
+            edges_mask_g = (edges_mask_g > 0).to(dtype=torch.bool)
+            
+            edges_mask_b[:, 2, d_min:d_max+1, h_min:h_max+1, w_min:w_max+1] = 1
+            erosion_mask_b[:, 2, d_min+1:d_max, h_min+2:h_max-1, w_min+2:w_max-1] = 1
+            edges_mask_b = edges_mask_b - erosion_mask_b
+            edges_mask_b = (edges_mask_b > 0).to(dtype=torch.bool)
+            
+            xs[edges_mask_r] = rgb_color[0]
+            xs[edges_mask_g] = rgb_color[1]
+            xs[edges_mask_b] = rgb_color[2]
+            
+        mod_save_path = save_path + "_modality" + str(mod_idx) + ".png"
+        plot_rgb_slices(np.array(xs[0,:,:,:,:]), title=title, legend=ps_scores, save_path=mod_save_path)
 
 

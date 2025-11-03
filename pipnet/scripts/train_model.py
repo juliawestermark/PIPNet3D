@@ -8,7 +8,7 @@ from typing import Dict, List, Tuple
 
 
 
-def train_pipnet(
+def train_mmpipnet(
         net, 
         train_loader, 
         optimizer_net, 
@@ -68,21 +68,34 @@ def train_pipnet(
     
     lrs_net = []
     lrs_class = []
+    nbr_modalities = net.module._num_modalities
     
     # Iterate through the data set to update leaves, prototypes and network
-    for i, (xs1, xs2, ys) in train_iter:       
+    # for i, (xs1, xs2, ys) in train_iter:
+        # xs1, xs2, ys = xs1.to(device), xs2.to(device), ys.to(device)
+    for i, batch in train_iter:
+        *modalities, ys = batch
+        modalities = [x.to(device) for x in modalities]
+        ys = ys.to(device)
         
-        xs1, xs2, ys = xs1.to(device), xs2.to(device), ys.to(device)
-       
         # Reset the gradients
+        # TODO: One or many optimizers?
         optimizer_classifier.zero_grad(set_to_none=True)
         optimizer_net.zero_grad(set_to_none=True)
        
         # Perform a forward pass through the network
-        proto_features, pooled, out = net(torch.cat([xs1, xs2]))
+        # proto_features, pooled, out = net(torch.cat([xs1, xs2]))
+        modality_list = []
+        for m in range(nbr_modalities):
+            part1 = modalities[m]
+            part2 = modalities[m+nbr_modalities]
+            modality_list.append(torch.cat([part1, part2]))
+
+        proto_features_list, pooled, _, out = net(modality_list)
         
+        # TODO: One or many criterions?
         loss, acc = calculate_loss(
-            proto_features, 
+            proto_features_list, 
             pooled, 
             out, 
             ys, 
@@ -95,7 +108,7 @@ def train_pipnet(
             finetune, 
             criterion, 
             train_iter, 
-            print = True, 
+            do_print = True, 
             EPS = 1e-8)
         
         # Compute the gradient
@@ -135,7 +148,7 @@ def train_pipnet(
 
 
 def calculate_loss(
-        proto_features, 
+        proto_features_list, 
         pooled, 
         out, 
         ys1, 
@@ -148,16 +161,21 @@ def calculate_loss(
         finetune, 
         criterion, 
         train_iter, 
-        print = True, 
+        do_print = True, 
         EPS = 1e-10):
     
     ys = torch.cat([ys1, ys1])
     pooled1, pooled2 = pooled.chunk(2) # each one: (bs, num_features)
-    pf1, pf2 = proto_features.chunk(2) # each one: (bs, num_features, d, h, w)
-    embv2 = pf2.flatten(start_dim=2).permute(0,2,1).flatten(end_dim=1)
-    embv1 = pf1.flatten(start_dim=2).permute(0,2,1).flatten(end_dim=1)
+    a_loss_pf_list = []
+    for proto_features in proto_features_list:
+        pf1, pf2 = proto_features.chunk(2) # each one: (bs, num_features, d, h, w)
+        embv2 = pf2.flatten(start_dim=2).permute(0,2,1).flatten(end_dim=1)
+        embv1 = pf1.flatten(start_dim=2).permute(0,2,1).flatten(end_dim=1)
     
-    a_loss_pf = (align_loss(embv1, embv2.detach()) + align_loss(embv2, embv1.detach()))/2.
+        a_loss_pf = (align_loss(embv1, embv2.detach()) + align_loss(embv2, embv1.detach()))/2.
+        a_loss_pf_list.append(a_loss_pf)
+
+    a_loss_pf = sum(a_loss_pf_list)/len(a_loss_pf_list)
     tanh_loss = -(torch.log(torch.tanh(torch.sum(pooled1, dim=0)) + EPS).mean() + torch.log(torch.tanh(torch.sum(pooled2, dim=0)) + EPS).mean())/2.
 
     if not finetune:
@@ -191,7 +209,7 @@ def calculate_loss(
         correct = torch.sum(torch.eq(ys_pred_max, ys))
         acc = correct.item() / float(len(ys))
     
-    if print: 
+    if do_print: 
         with torch.no_grad():
             if pretrain:
                 train_iter.set_postfix_str(f'L: {loss.item():.3f}, LA:{a_loss_pf.item():.2f}, LT:{tanh_loss.item():.3f}, num_scores>0.1:{torch.count_nonzero(torch.relu(pooled-0.1),dim=1).float().mean().item():.1f}',refresh=False)
