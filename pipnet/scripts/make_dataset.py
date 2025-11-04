@@ -279,20 +279,12 @@ def setup_mri_dataframe(classes=["CN", "MCI", "AD"]):
 
     return mri_merged[:100]  # TODO: remove. for testing purposes, use only first 100 entries
 
-def get_small_mri_dataframe():
-    mri = setup_mri_dataframe()
-    small_mri = mri[[
-        "individual_id",
-        "clinical_stage",
-        "file_path",
-    ]].copy()
-    return small_mri
 
 def split_dataset(dataset: pd.DataFrame, test_size, val_size, random_state=42) -> tuple:
     """Splits the dataset into training, validation and testing sets based on unique subjects."""
     unique_subjects = dataset["individual_id"].unique()
     train_val_subjects, test_subjects = train_test_split(unique_subjects, test_size=test_size, random_state=random_state)
-    train_subjects, val_subjects = train_test_split(train_val_subjects, test_size=(val_size / (1-test_size)), random_state=random_state)  # 0.25 x 0.8 = 0.2
+    train_subjects, val_subjects = train_test_split(train_val_subjects, test_size=(val_size / (1-test_size)), random_state=random_state)
     train_df = dataset[dataset["individual_id"].isin(train_subjects)].copy()
     val_df = dataset[dataset["individual_id"].isin(val_subjects)].copy()
     test_df = dataset[dataset["individual_id"].isin(test_subjects)].copy()

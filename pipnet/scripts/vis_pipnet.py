@@ -21,6 +21,7 @@ import torchvision
 from plot_utils import plot_3d_slices, plot_rgb_slices, generate_rgb_array, plot_atlas_overlay
 import random
 import nibabel as nib
+from tqdm.auto import tqdm
 
 
 
@@ -161,7 +162,9 @@ def visualize_topk(
     classification_weights = net.module._classification.weight
 
     # Show progress on progress bar
-    img_iter = enumerate(iter(projectloader))
+    # img_iter = enumerate(iter(projectloader))
+    desc_text = f"Search top{k} activated images for each relevant prototypes"
+    img_iter = tqdm(enumerate(projectloader), total=len(projectloader), desc=desc_text, mininterval=2., ncols=0)
     
     # Iterate through the data
     images_seen = 0
@@ -170,7 +173,7 @@ def visualize_topk(
     # Iterate through the training set
     for i, (*xs_list, ys) in img_iter:
         
-        print("Search top%s"%str(k)," activated images for each relevant prototypes,", "current image", i, flush=True)
+        # print("Search top%s"%str(k)," activated images for each relevant prototypes,", "current image", i, flush=True)
         images_seen += 1
         # xs, ys = xs.to(device), ys.to(device)
         ys = ys.to(device)
@@ -237,11 +240,14 @@ def visualize_topk(
     abstained = 0
     
 
-    img_iter = enumerate(iter(projectloader))
+    # img_iter = enumerate(iter(projectloader))
+    desc_text = f"Localize each relevant prototype with similarity > 0.1 as a patch of the top{k} activated images in the training set"
+    img_iter = tqdm(enumerate(projectloader), total=len(projectloader), desc=desc_text, mininterval=2., ncols=0)
+    
 
     for i, (*xs_list, ys) in img_iter:
         
-        print("Localize each relevant prototype with similarity > 0.1 as a", "patch of the topk activated images in the training set,", i, flush=True)
+        # print("Localize each relevant prototype with similarity > 0.1 as a", "patch of the topk activated images in the training set,", i, flush=True)
         
         # shuffle is false so should lead to same order as in imgs
         if i in alli:
@@ -328,7 +334,8 @@ def visualize_topk(
     all_tensors = []
     
     count_p = 0
-    for p in range(net.module._num_prototypes):
+    # for p in range(net.module._num_prototypes):
+    for p in tqdm(range(net.module._num_prototypes), desc="Processing prototypes"):
         
         # print("Plot prototypes", p, flush=True)
         
@@ -378,8 +385,8 @@ def visualize_topk(
                 # else:
                 #     exam = None
                 
-                ps_name = subj + "_proto" + p
-                ps_patch_name = "patch_" + subj + "_proto" + p
+                ps_name = subj + "_proto" + str(p)
+                ps_patch_name = "patch_" + subj + "_proto" + str(p)
 
                 plot_name = ps_name + ".png"
                 plot_patch_name = ps_patch_name + ".png"

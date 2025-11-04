@@ -217,12 +217,13 @@ def get_local_explanations(
     net.eval()
     classification_weights = net.module._classification.weight
 
-    img_iter = enumerate(iter(projectloader))
+    # img_iter = enumerate(iter(projectloader))
+    img_iter = tqdm(enumerate(projectloader), total=len(projectloader), desc="Processing images", mininterval=5., ncols=0)
     count = 0
     
     for k, (*xs_list, ys) in img_iter: # shuffle is false so should lead to same order as in imgs
         
-        print("Processing image %s/%s"%(str(k+1), str(len(projectloader.dataset))), flush=True)
+        # print("Processing image %s/%s"%(str(k+1), str(len(projectloader.dataset))), flush=True)
         # xs, ys = xs.to(device), ys.to(device)
         ys = ys.to(device)
         xs_list = [x.to(device) for x in xs_list]
@@ -337,8 +338,9 @@ def eval_local_explanations(
     ps_cc_coords = {ps:[] for ps in relevant_ps}
     ps_scores = {ps:[] for ps in relevant_ps}
     
-    for i, local_explanation in enumerate(local_explanations):
-        print("Processing explanation %s/%s"%(str(i+1), str(len(local_explanations))), flush=True)
+    # for i, local_explanation in enumerate(local_explanations):
+    for i, local_explanation in tqdm(enumerate(local_explanations), total=len(local_explanations), desc="Processing explanations", mininterval=5., ncols=0):
+        # print("Processing explanation %s/%s"%(str(i+1), str(len(local_explanations))), flush=True)
         
         proto_found = list(local_explanation.keys())
         proto_found.sort()
@@ -381,10 +383,11 @@ def eval_local_explanations(
 def check_empty_prototypes(args, net, img_prototype_top1, proto_coord_top1):
     
     empty_ps = []
-    for p in range(net.module._num_prototypes):
+    # for p in range(net.module._num_prototypes):
+    for p in tqdm(range(net.module._num_prototypes), desc="Check prototypes"):
         
         if img_prototype_top1[p]:
-            print("Check prototype %s"%str(p))
+            # print("Check prototype %s"%str(p))
             
             img_name = img_prototype_top1[p][0] # numpy array directory
             ps_coord = proto_coord_top1[p][0]

@@ -128,8 +128,8 @@ print("Classifier weights: ", pipnet.module._classification.weight, flush = True
 print("Classifier weights nonzero: ", pipnet.module._classification.weight[pipnet.module._classification.weight.nonzero(as_tuple=True)], (pipnet.module._classification.weight[pipnet.module._classification.weight.nonzero(as_tuple=True)]).shape, flush = True)
 print("Classifier bias: ", pipnet.module._classification.bias, flush = True)
 
-for p in topks.keys(): 
-    print(pipnet.module._classification.weight[:,p])
+# for p in topks.keys(): 
+#     print(pipnet.module._classification.weight[:,p])
 
 # Print weights and relevant prototypes per class
 for c in range(pipnet.module._classification.weight.shape[0]):
