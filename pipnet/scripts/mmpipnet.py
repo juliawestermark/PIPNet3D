@@ -14,6 +14,9 @@ import torch.nn.functional as F
 from videoresnet_features import video_resnet18_features
 from convnext_features import convnext_tiny_3d_features
 from typing import List
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class MMPIPNet(nn.Module):
@@ -135,12 +138,12 @@ def get_network(num_classes: int, args: argparse.Namespace):
     
     if args.num_features == 0:
         num_prototypes = first_add_on_layer_in_channels
-        print("Number of prototypes: ", num_prototypes, flush=True)
+        logger.info("Number of prototypes: %s", num_prototypes)
         add_on_layers = nn.Sequential(nn.Softmax(dim=1),)  # softmax over every prototype for each patch, such that for every location in image, sum over prototypes is 1                
               
     else:
         num_prototypes = args.num_features
-        print("Number of prototypes set from", first_add_on_layer_in_channels, "to", num_prototypes, ". Extra 1x1x1 conv layer added. Not recommended.", flush=True)
+        logger.info("Number of prototypes set from %s to %s. Extra 1x1x1 conv layer added. Not recommended.", first_add_on_layer_in_channels, num_prototypes)
         
         add_on_layers = nn.Sequential(
             nn.Conv3d(in_channels = first_add_on_layer_in_channels, out_channels = num_prototypes, kernel_size = 1, stride = 1, padding = 0, bias = True), 

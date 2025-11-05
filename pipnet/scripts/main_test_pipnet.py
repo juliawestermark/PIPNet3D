@@ -25,6 +25,8 @@ from test_model import eval_local_explanations
 from test_model import check_empty_prototypes
 from vis_pipnet import visualize_topk
 
+import logging
+from logger_setup import setup_logger
 
 
 #%% Global Variables
@@ -44,6 +46,8 @@ np.random.seed(args.seed)
         
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+setup_logger(level=logging.INFO, log_dir=args.log_dir + "/logs")
+logger = logging.getLogger(__name__)
 
 #%% Get Dataloaders for the current_fold
 
@@ -61,8 +65,8 @@ test_projectloader = dataloaders[7]
     
 #%% Evaluate 3D-PIPNet trained for the current_fold
 
-print("------", flush = True)
-print("PIPNet performances @fold: ", current_fold, flush = True)
+logger.info("------")
+logger.info("PIPNet performances @fold: %s", current_fold)
     
 pipnet = load_trained_mmpipnet(args)
 pipnet.eval()
@@ -75,7 +79,7 @@ with torch.no_grad():
     # proto_features, _, _ = pipnet(xs1)
     modalities_batch = next(iter(testloader))
     xs_list = [xs.to(device) for xs in modalities_batch[:-1]]
-    print("Input shape: ", xs_list[0].shape, flush=True)
+    logger.info("Input shape: %s", xs_list[0].shape)
     proto_features_list, _, _, _ = pipnet(xs_list)
     proto_features = proto_features_list[0]
     wshape = proto_features.shape[-1]
@@ -84,7 +88,7 @@ with torch.no_grad():
     args.wshape = wshape # needed for calculating image patch size
     args.hshape = hshape # needed for calculating image patch size
     args.dshape = dshape # needed for calculating image patch size
-    print("Output shape: ", proto_features.shape, flush=True)
+    logger.info("Output shape: %s", proto_features.shape)
 
 
 #%% Get the Global Explanation
@@ -122,11 +126,11 @@ if topks:
         if not found:
             torch.nn.init.zeros_(pipnet.module._classification.weight[:,prot])
             set_to_zero.append(prot)
-    print("Weights of prototypes", set_to_zero, "are set to zero because it is never detected with similarity>0.1 in the training set", flush=True)
+    logger.info("Weights of prototypes %s are set to zero because it is never detected with similarity>0.1 in the training set", set_to_zero)
 
-print("Classifier weights: ", pipnet.module._classification.weight, flush = True)
-print("Classifier weights nonzero: ", pipnet.module._classification.weight[pipnet.module._classification.weight.nonzero(as_tuple=True)], (pipnet.module._classification.weight[pipnet.module._classification.weight.nonzero(as_tuple=True)]).shape, flush = True)
-print("Classifier bias: ", pipnet.module._classification.bias, flush = True)
+logger.info("Classifier weights: %s", pipnet.module._classification.weight)
+logger.info("Classifier weights nonzero: %s %s", pipnet.module._classification.weight[pipnet.module._classification.weight.nonzero(as_tuple=True)], (pipnet.module._classification.weight[pipnet.module._classification.weight.nonzero(as_tuple=True)]).shape)
+logger.info("Classifier bias: %s", pipnet.module._classification.bias)
 
 # for p in topks.keys(): 
 #     print(pipnet.module._classification.weight[:,p])
@@ -140,9 +144,8 @@ for c in range(pipnet.module._classification.weight.shape[0]):
         if proto_weights[p]> 1e-3:
             relevant_ps.append((p, proto_weights[p].item()))
 
-    print("Class", c, "(", 
-          list(testloader.dataset.class_to_idx.keys())[list(testloader.dataset.class_to_idx.values()).index(c)],
-          "):", "has", len(relevant_ps), "relevant prototypes: ", relevant_ps,  flush = True)
+    logger.info("Class %s (%s) has %s relevant prototypes: %s", c, 
+          list(testloader.dataset.class_to_idx.keys())[list(testloader.dataset.class_to_idx.values()).index(c)], len(relevant_ps), relevant_ps)
 
 
 #%% Evaluate PIPNet: 
@@ -153,8 +156,8 @@ info = eval_mmpipnet(
     testloader, 
     "notused", 
     device)
-for elem in info.items():
-    print(elem)
+# for elem in info.items():
+#     logger.info(elem)
     
 # TODO: the code takes a looooong time to run here.
 local_explanations_test, y_preds_test, y_trues_test = get_local_explanations(pipnet, testloader, device, args, plot=True)
@@ -163,7 +166,7 @@ local_explanations_test, y_preds_test, y_trues_test = get_local_explanations(pip
 #%% Evaluate the prototypes extracted
 
 columns=["detection_rate", "mean_pcc_d", "mean_pcc_h", "mean_pcc_w", "std_pcc_d", "std_pcc_h", "std_pcc_w", "LC"]
-print("\nEvaluation of prototypes on test set:", flush=True)
+logger.info("\nEvaluation of prototypes on test set:")
 ps_test_evaluation = eval_local_explanations(pipnet, local_explanations_test, device, args)
 
 ps_test_detections = ps_test_evaluation[0]
@@ -179,18 +182,17 @@ empty_ps = check_empty_prototypes(args, pipnet, img_prototype_top1, proto_coord_
 
 #%% Evaluate OOD Detection
 for percent in [95.]:
-    print("\nOOD Evaluation for epoch", "not used","with percent of", percent, 
-          flush=True)
+    logger.info("\nOOD Evaluation for epoch %s with procent of %s", "not used", percent)
     _, _, _, class_thresholds = get_thresholds(
         pipnet, testloader, args.epochs, device, percent)
     
-    print("Thresholds:", class_thresholds, flush=True)
+    logger.info("Thresholds: %s", class_thresholds)
     
     # Evaluate with in-distribution data
     id_fraction = eval_ood(
         pipnet, testloader, args.epochs, device, class_thresholds)
-    print("ID class threshold ID fraction (TPR) with percent", percent, ":", 
-          id_fraction, flush=True)
+    logger.info("ID class threshold ID fraction (TPR) with percent %s: %s", percent, 
+          id_fraction)
     
     # Evaluate with out-of-distribution data
     ood_args = deepcopy(args)
@@ -198,9 +200,9 @@ for percent in [95.]:
     
     id_fraction = eval_ood(
         pipnet, ood_testloader, args.epochs, device, class_thresholds)
-    print("class threshold ID fraction (FPR) with percent", percent,":", 
-          id_fraction, flush=True)                
+    logger.info("class threshold ID fraction (FPR) with percent %s: %s", percent, 
+          id_fraction)                
 
 # Again print final evaluation info
 for elem in info.items():
-    print(elem)
+    logger.info(elem)

@@ -5,7 +5,9 @@ import torch.nn.functional as F
 import torch.optim
 import torch.utils.data
 from typing import Dict, List, Tuple
+import logging
 
+logger = logging.getLogger(__name__)
 
 
 def train_mmpipnet(
@@ -48,9 +50,8 @@ def train_mmpipnet(
         if param.requires_grad:
             count_param+=1  
             
-    print("Number of parameters that require gradient: ", 
-          count_param, 
-          flush=True)
+    logger.info("Number of parameters that require gradient: %s", 
+          count_param)
 
     if pretrain:
         align_pf_weight = (epoch/nr_epochs)*1.
@@ -63,8 +64,8 @@ def train_mmpipnet(
         unif_weight = 0.
         cl_weight = 2.
 
-    print("Align weight: ", align_pf_weight, ", U_tanh weight: ", t_weight, "Class weight:", cl_weight, flush = True)
-    print("Pretrain?", pretrain, "Finetune?", finetune, flush = True)
+    logger.info("Align weight: %s, U_tanh weight: %s, Class weight: %s", align_pf_weight, t_weight, cl_weight)
+    logger.info("Pretrain? %s Finetune? %s", pretrain, finetune)
     
     lrs_net = []
     lrs_class = []
@@ -226,7 +227,7 @@ def calculate_loss(
 # Currently not used but you could try adding it if you want. 
 def uniform_loss(x, t=2):
     
-    print("sum elements: ", torch.sum(torch.pow(x,2), dim=1).shape, torch.sum(torch.pow(x,2), dim=1)) #--> should be ones
+    logger.info("sum elements: %s", torch.sum(torch.pow(x,2), dim=1).shape, torch.sum(torch.pow(x,2), dim=1)) #--> should be ones
     loss = (torch.pdist(x, p=2).pow(2).mul(-t).exp().mean() + 1e-10).log()
     return loss
 

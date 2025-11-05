@@ -19,7 +19,9 @@ import random
 import torch.optim
 from datetime import datetime
 import sys
+import logging
 
+logger = logging.getLogger(__name__)
 
 
 def get_args(
@@ -278,13 +280,12 @@ def set_device(args:argparse.Namespace):
             
         elif len(device_ids) == 0:
             device = torch.device('cuda')
-            print("CUDA device set without id specification", flush = True)
+            logger.info("CUDA device set without id specification")
             device_ids.append(torch.cuda.current_device())
             
         else:
-            print("This code should work with multiple GPU's but we didn't \
-                  test that, so we recommend to use only 1 GPU.",
-                  flush = True)
+            logger.info("This code should work with multiple GPU's but we didn't \
+                  test that, so we recommend to use only 1 GPU.")
             device_str = ''
             
             for d in device_ids:
@@ -304,11 +305,11 @@ def check_unfrozen(model):
     for name, param in model.named_parameters():
         if not param.requires_grad:
             all_unfrozen = False
-            print(f"Parameter {name} is frozen.")
+            logger.info(f"Parameter {name} is frozen.")
     if all_unfrozen:
-        print("All layers are unfrozen.")
+        logger.info("All layers are unfrozen.")
     else:
-        print("Not all layers are unfrozen.")
+        logger.info("Not all layers are unfrozen.")
         
 
 def init_weights_xavier(m):
@@ -334,9 +335,9 @@ def get_optimizer_mm_nn(
     classification_bias = []
 
     if 'resnet3D_18' or 'convnetx3D_tiny' in args.net:
-        print("Network is ", args.net, flush = True)
+        logger.info("Network is %s", args.net)
     else:
-        print("Network not implemented", flush = True)
+        logger.info("Network not implemented")
 
     # Feature extractor parameters
     for i, net_i in enumerate(net.module._nets):
@@ -384,7 +385,7 @@ def get_optimizer_mm_nn(
             paramlist_classifier,
             lr = args.lr,
             weight_decay = args.weight_decay)
-        print("Using Adam optimizer", flush = True)
+        logger.info("Using Adam optimizer")
         return optimizer_net, optimizer_classifier, params_feature_nets, params_add_ons
     else:
         raise ValueError("this optimizer type is not implemented")

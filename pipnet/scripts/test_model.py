@@ -26,6 +26,9 @@ from utils import topk_accuracy
 from vis_pipnet import get_patch_size, get_img_coordinates, plot_local_explanation
 from plot_utils import plot_3d_slices, plot_rgb_slices, generate_rgb_array
 
+import logging
+
+logger = logging.getLogger(__name__)
     
 
 @torch.no_grad()
@@ -104,7 +107,7 @@ def eval_mmpipnet(
         del pooled
         del ys_pred
         
-    print("PIP-Net abstained from a decision for", abstained.item(), "images", flush = True)     
+    logger.info("PIP-Net abstained from a decision for %s images", abstained.item())     
        
     info['num non-zero prototypes'] = torch.gt(net.module._classification.weight, 1e-3).any(dim = 0).sum().item()
     info['confusion_matrix'] = cm
@@ -119,7 +122,7 @@ def eval_mmpipnet(
     info["sparsity"] = (torch.numel(net.module._classification.weight) - torch.count_nonzero(torch.nn.functional.relu(net.module._classification.weight-1e-3)).item()) / torch.numel(net.module._classification.weight)
     balanced_accuracy = balanced_accuracy_score(y_trues, y_preds_classes)
     info["balanced_accuracy"] = balanced_accuracy
-    print("Balanced accuracy ", info["balanced_accuracy"])
+    logger.info("Balanced accuracy %s", info["balanced_accuracy"])
 
     if net.module._num_classes == 2:
         tp = cm[0][0]
@@ -130,8 +133,8 @@ def eval_mmpipnet(
         specificity = tn/(tn+fp)
         info["sensititvity"] = sensitivity
         info["specificity"] = specificity
-        print("\n Epoch",epoch, flush=True)
-        print("TP: ", tp, "FN: ", fn, "FP:", fp, "TN:", tn, flush=True)
+        logger.info("\n Epoch %s",epoch)
+        logger.info("TP: %s FN: %s FP: %s TN: %s", tp, fn, fp, tn)
         info['top3_accuracy'] = f1_score(y_trues, y_preds_classes)
     
     else:
@@ -186,7 +189,7 @@ def get_local_explanations(
         
     """
     
-    print("Detect prototypes in predictions...", flush = True)
+    logger.info("Detect prototypes in predictions...")
 
     dir = os.path.join(args.log_dir, "clinical_feedback_local_explanations")
     if plot:
@@ -498,8 +501,7 @@ def get_thresholds(net,
     for c in range(net.module._num_classes):
         
         if c not in class_thresholds.keys():
-            print(c,"not in class thresholds. Setting to mean threshold", 
-                  flush=True)
+            logger.info("%s not in class thresholds. Setting to mean threshold", c)
             class_thresholds[c] = mean_ct
             
         if c not in correct_class_thresholds.keys():
@@ -578,8 +580,8 @@ def eval_ood(net,
             del pooled
             del ys_pred
             
-    print("Samples seen:", seen, "of which predicted as In-Distribution:", predicted_as_id, flush=True)
-    print("PIP-Net abstained from a decision for", abstained.item(), "images", flush=True)
+    logger.info("Samples seen: %s of which predicted as In-Distribution: %s", seen, predicted_as_id)
+    logger.info("PIP-Net abstained from a decision for %s images", abstained.item())
     
     return predicted_as_id/seen
 

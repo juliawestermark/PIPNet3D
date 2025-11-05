@@ -22,7 +22,9 @@ from plot_utils import plot_3d_slices, plot_rgb_slices, generate_rgb_array, plot
 import random
 import nibabel as nib
 from tqdm.auto import tqdm
+import logging
 
+logger = logging.getLogger(__name__)
 
 
 def get_patch_size(args):
@@ -108,7 +110,7 @@ def visualize_topk(
         
     """
     
-    print("Visualizing prototypes for topk...", flush = True)
+    logger.info("Visualizing prototypes for topk...")
     dir = os.path.join(args.log_dir, foldername)
     if save or plot:
         if not os.path.exists(dir):
@@ -236,7 +238,7 @@ def visualize_topk(
             prototypes_not_used.append(p)
             
 
-    print(len(prototypes_not_used), "prototypes do not have any similarity score > 0.1. Will be ignored in visualisation.")
+    logger.info("%s prototypes do not have any similarity score > 0.1. Will be ignored in visualisation.", len(prototypes_not_used))
     abstained = 0
     
 
@@ -330,7 +332,7 @@ def visualize_topk(
                                 subject_id[p].append(sub_id)
                                 
 
-    print("Abstained: ", abstained, flush = True)
+    logger.info("Abstained: %s", abstained)
     all_tensors = []
     
     count_p = 0

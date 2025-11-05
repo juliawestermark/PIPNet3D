@@ -37,6 +37,10 @@ from vis_pipnet import visualize_topk
 # - eval_mmpipnet in test_model.py
 # - visualize_topk for mmpipnet in vis_pipnet.py
 
+import logging
+from logger_setup import setup_logger
+
+
 
 #%% Global Variables
 
@@ -56,6 +60,8 @@ np.random.seed(args.seed)
         
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+setup_logger(level=logging.INFO, log_dir=args.log_dir + "/logs")
+logger = logging.getLogger(__name__)
 
 #%% Get Dataloaders
 
@@ -147,7 +153,7 @@ with torch.no_grad():
         epoch = 0
         checkpoint = torch.load(args.state_dict_dir_net, map_location = device)
         net.load_state_dict(checkpoint['model_state_dict'], strict = True) 
-        print("Pretrained network loaded", flush = True)
+        logger.info("Pretrained network loaded")
         net.module._multiplier.requires_grad = False
         
         try:
@@ -157,10 +163,10 @@ with torch.no_grad():
         
         if torch.mean(net.module._classification.weight).item() > 1.0 and torch.mean(net.module._classification.weight).item() < 3.0 and torch.count_nonzero(torch.relu(net.module._classification.weight-1e-5)).float().item() > 0.8*(total_num_prototypes*args.num_classes): 
 
-            print("We assume that the classification layer is not yet  trained. We re-initialize it...", flush = True) # e.g. loading a pretrained backbone only
+            logger.info("We assume that the classification layer is not yet  trained. We re-initialize it...") # e.g. loading a pretrained backbone only
             torch.nn.init.normal_(net.module._classification.weight, mean = 1.0, std = 0.1) 
             torch.nn.init.constant_(net.module._multiplier, val = 2.)
-            print("Classification layer initialized with mean", torch.mean(net.module._classification.weight).item(), flush = True)
+            logger.info("Classification layer initialized with mean %s", torch.mean(net.module._classification.weight).item())
             
             if args.bias:
                 torch.nn.init.constant_(net.module._classification.bias, val = 0.)
@@ -181,7 +187,7 @@ with torch.no_grad():
         torch.nn.init.constant_(net.module._multiplier, val = 2.)
         net.module._multiplier.requires_grad = False
 
-        print("Classification layer initialized with mean", torch.mean(net.module._classification.weight).item(), flush = True)
+        logger.info("Classification layer initialized with mean %s", torch.mean(net.module._classification.weight).item())
 
 # Define classification loss function and scheduler
 criterion = nn.NLLLoss(reduction='mean').to(device)
@@ -205,14 +211,14 @@ with torch.no_grad():
     args.wshape = wshape # needed for calculating image patch size
     args.hshape = hshape # needed for calculating image patch size
     args.dshape = dshape # needed for calculating image patch size
-    print("Output shape: ", proto_features.shape, flush=True)
+    logger.info("Output shape: %s", proto_features.shape)
 
 if net.module._num_classes == 2:
     
     # Create a csv log for storing the test accuracy, F1-score, mean train 
     # accuracy and mean loss for each epoch
     log.create_log('log_epoch_overview', 'epoch', 'test_top1_acc', 'test_f1', 'almost_sim_nonzeros', 'local_size_all_classes', 'almost_nonzeros_pooled', 'num_nonzero_prototypes', 'mean_train_acc', 'mean_train_loss_during_epoch')
-    print("Your dataset only has two classes. Is the number of samples per class similar? If the data is imbalanced, we recommend to use the --weighted_loss flag to account for the imbalance.", flush = True)
+    logger.info("Your dataset only has two classes. Is the number of samples per class similar? If the data is imbalanced, we recommend to use the --weighted_loss flag to account for the imbalance.")
         
 else:
     
@@ -245,7 +251,7 @@ for epoch in range(1, args.epochs_pretrain+1):
     # for param in params_backbone:
     #     param.requires_grad = False # can be set to True when you want to train whole backbone (e.g. if dataset is very different from ImageNet)
     
-    print("\nPretrain Epoch", epoch, "with batch size", trainloader_pretraining.batch_size, flush = True)
+    logger.info("\nPretrain Epoch %s with batch size %s", epoch, trainloader_pretraining.batch_size)
     
     # Pretrain prototypes
     train_info = train_mmpipnet(
@@ -275,7 +281,7 @@ if args.state_dict_dir_net == '':
     
 with torch.no_grad():
     if args.epochs_pretrain > 0:
-        print("Visualize top-k")
+        logger.info("Visualize top-k")
         topks, img_prototype, proto_coord = visualize_topk(net, projectloader, len(args.dic_classes), device, 'visualised_pretrained_prototypes_topk', args, save=False, plot=False)
  
     
@@ -363,7 +369,7 @@ for epoch in range(1, args.epochs + 1):
                 # for param in params_backbone:
                 #     param.requires_grad = False
     
-    print("\n Epoch", epoch, "frozen:", frozen, flush = True)  
+    logger.info("\n Epoch %s frozen: %s", epoch, frozen)  
       
     if (epoch == args.epochs or epoch%30 == 0) and args.epochs > 1:
         
@@ -371,9 +377,9 @@ for epoch in range(1, args.epochs + 1):
         with torch.no_grad():
             torch.set_printoptions(profile = "full")
             net.module._classification.weight.copy_(torch.clamp(net.module._classification.weight.data - 0.001, min=0.)) 
-            print("Classifier weights: ", net.module._classification.weight[net.module._classification.weight.nonzero( as_tuple = True)], (net.module._classification.weight[ net.module._classification.weight.nonzero(as_tuple = True)]).shape, flush = True)
+            logger.info("Classifier weights: %s %s", net.module._classification.weight[net.module._classification.weight.nonzero( as_tuple = True)], (net.module._classification.weight[ net.module._classification.weight.nonzero(as_tuple = True)]).shape)
             if args.bias:
-                print("Classifier bias: ", net.module._classification.bias, flush = True)
+                logger.info("Classifier bias: %s", net.module._classification.bias)
             torch.set_printoptions(profile = "default")
     
     train_info = train_mmpipnet(
@@ -441,13 +447,13 @@ if topks:
         if not found:
             torch.nn.init.zeros_(net.module._classification.weight[:,prot])
             set_to_zero.append(prot)
-    print("Weights of prototypes", set_to_zero, "are set to zero because it is never detected with similarity>0.1 in the training set", flush=True)   
+    logger.info("Weights of prototypes %s are set to zero because it is never detected with similarity>0.1 in the training set", set_to_zero)   
     eval_info = eval_mmpipnet(net, testloader, "notused" + str(args.epochs), device, log)
     log.log_values('log_epoch_overview', "notused"+str(args.epochs), eval_info['top1_accuracy'], eval_info['top3_accuracy'], eval_info['almost_sim_nonzeros'], eval_info['local_size_all_classes'], eval_info['almost_nonzeros'], eval_info['num non-zero prototypes'], "n.a.", "n.a.")
 
-print("Classifier weights: ", net.module._classification.weight, flush = True)
-print("Classifier weights nonzero: ", net.module._classification.weight[net.module._classification.weight.nonzero(as_tuple=True)], (net.module._classification.weight[net.module._classification.weight.nonzero(as_tuple=True)]).shape, flush=True)
-print("Classifier bias: ", net.module._classification.bias, flush=True)
+logger.info("Classifier weights: %s", net.module._classification.weight)
+logger.info("Classifier weights nonzero: %s %s", net.module._classification.weight[net.module._classification.weight.nonzero(as_tuple=True)], (net.module._classification.weight[net.module._classification.weight.nonzero(as_tuple=True)]).shape)
+logger.info("Classifier bias: %s", net.module._classification.bias)
 
 # Print weights and relevant prototypes per class
 for c in range(net.module._classification.weight.shape[0]):
@@ -458,5 +464,5 @@ for c in range(net.module._classification.weight.shape[0]):
         if proto_weights[p]> 1e-3:
             relevant_ps.append((p, proto_weights[p].item()))
     if args.test_split == 0.:
-        print("Class", c, "(", list(testloader.dataset.class_to_idx.keys())[list(testloader.dataset.class_to_idx.values()).index(c)], "):", "has", len(relevant_ps), "relevant prototypes: ", relevant_ps, flush=True)
+        logger.info("Class %s (%s): has %s relevant prototypes: %s", c, list(testloader.dataset.class_to_idx.keys())[list(testloader.dataset.class_to_idx.values()).index(c)], len(relevant_ps), relevant_ps)
 
