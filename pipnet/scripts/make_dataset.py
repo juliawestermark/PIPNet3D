@@ -47,7 +47,8 @@ from sklearn.model_selection import train_test_split
 
 logger = logging.getLogger(__name__)
 
-ADNI_PATH = "/home/maia-user/ADNI_complete"
+#ADNI_PATH = "/home/maia-user/ADNI_complete"
+ADNI_PATH = "/proj/berzbiomedicalimagingkth/users/x_julwe/ADNI/ADNI_complete"
 DATA_PATH = os.path.join(ADNI_PATH, "adni")
 COLLECTION_PATH = os.path.join(ADNI_PATH, "OutputCollection.csv")
 DEMOGRAPHICS_PATH = os.path.join(ADNI_PATH, "participant_demographics.csv")
@@ -277,7 +278,7 @@ def setup_mri_dataframe(classes=["CN", "MCI", "AD"]):
     })
     mri_merged = mri_merged[mri_merged["clinical_stage"].isin(classes)].reset_index(drop=True)
 
-    return mri_merged[:100]  # TODO: remove. for testing purposes, use only first 100 entries
+    return mri_merged #[:100]  # TODO: remove. for testing purposes, use only first 100 entries
 
 
 def split_dataset(dataset: pd.DataFrame, test_size, val_size, random_state=42) -> tuple:
@@ -618,7 +619,8 @@ def get_dataloaders(args: argparse.Namespace):
         sampler = sampler,
         pin_memory = cuda,
         num_workers = num_workers,
-        worker_init_fn = np.random.seed(args.seed),
+        #worker_init_fn = np.random.seed(args.seed),
+        persistent_workers=True,
         drop_last = True)
            
     trainloader_pretraining = torch.utils.data.DataLoader(
@@ -628,7 +630,8 @@ def get_dataloaders(args: argparse.Namespace):
         sampler = sampler,
         pin_memory = cuda,
         num_workers = num_workers,
-        worker_init_fn = np.random.seed(args.seed),
+        #worker_init_fn = np.random.seed(args.seed),
+        persistent_workers=True,
         drop_last = True)
     
     trainloader_normal = torch.utils.data.DataLoader(
@@ -638,7 +641,8 @@ def get_dataloaders(args: argparse.Namespace):
         sampler = sampler,
         pin_memory = cuda,
         num_workers = num_workers,
-        worker_init_fn = np.random.seed(args.seed),
+        #worker_init_fn = np.random.seed(args.seed),
+        persistent_workers=True,
         drop_last = True)
         
     trainloader_normal_augment = torch.utils.data.DataLoader(
@@ -648,7 +652,8 @@ def get_dataloaders(args: argparse.Namespace):
         sampler = sampler,
         pin_memory = cuda,
         num_workers = num_workers,
-        worker_init_fn = np.random.seed(args.seed),
+        #worker_init_fn = np.random.seed(args.seed),
+        persistent_workers=True,
         drop_last = True)
     
     projectloader = torch.utils.data.DataLoader(
@@ -658,7 +663,8 @@ def get_dataloaders(args: argparse.Namespace):
         sampler = sampler,
         pin_memory = cuda,
         num_workers = num_workers,
-        worker_init_fn = np.random.seed(args.seed),
+        #worker_init_fn = np.random.seed(args.seed),
+        persistent_workers=True,
         drop_last = True)
     
     valloader = torch.utils.data.DataLoader(
@@ -667,7 +673,8 @@ def get_dataloaders(args: argparse.Namespace):
         shuffle = True, 
         pin_memory = cuda,
         num_workers = num_workers,                
-        worker_init_fn = np.random.seed(args.seed),
+        #worker_init_fn = np.random.seed(args.seed),
+        persistent_workers=True,
         drop_last = False)
 
     testloader = torch.utils.data.DataLoader(
@@ -676,7 +683,8 @@ def get_dataloaders(args: argparse.Namespace):
         shuffle = False, 
         pin_memory = cuda,
         num_workers = num_workers,                
-        worker_init_fn = np.random.seed(args.seed),
+        #worker_init_fn = np.random.seed(args.seed),
+        persistent_workers=True,
         drop_last = False)
     
     test_projectloader = torch.utils.data.DataLoader(
@@ -685,7 +693,8 @@ def get_dataloaders(args: argparse.Namespace):
         shuffle = False, 
         pin_memory = cuda,
         num_workers = num_workers,                
-        worker_init_fn = np.random.seed(args.seed),
+        #worker_init_fn = np.random.seed(args.seed),
+        persistent_workers=True,
         drop_last = False)
 
     return trainloader, trainloader_pretraining, trainloader_normal, trainloader_normal_augment, projectloader, valloader, testloader, test_projectloader

@@ -219,3 +219,4 @@ __marimo__/
 results/
 saved/
 models/
+slurm-*.out

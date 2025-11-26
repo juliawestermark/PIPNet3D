@@ -21,7 +21,8 @@ from mmpipnet import MMPIPNet, get_mmpipnet_network
 from convnext_features import convnext_tiny_3d
 
 def load_trained_mmpipnet(args):
-    models_folder = "/home/maia-user/PIPNet3D/pipnet/models/binary"
+    #models_folder = "/home/maia-user/PIPNet3D/pipnet/models/binary"
+    models_folder = "/proj/berzbiomedicalimagingkth/users/x_julwe/PIPNet3D/pipnet/models/binary"
     model_path = os.path.join(models_folder, args.net, "best_mmpipnet_fold%s"%str(args.current_fold))
 
     device, device_ids = set_device(args)
