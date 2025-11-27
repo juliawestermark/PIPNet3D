@@ -9,8 +9,6 @@ from torch.utils.data import DataLoader
 import torch.nn.functional as F
 from tqdm.auto import tqdm
 import monai.transforms as transforms
-import nibabel as nib
-import re
 
 from sklearn.metrics import accuracy_score
 from sklearn.metrics import roc_auc_score
@@ -115,9 +113,6 @@ def eval_pipnet(
     f1 = 'binary' if net.module._num_classes == 2 else 'weighted'
     info["f1"] = f1_score(y_trues, y_preds_classes, average=f1)
     info["sparsity"] = (torch.numel(net.module._classification.weight) - torch.count_nonzero(torch.nn.functional.relu(net.module._classification.weight-1e-3)).item()) / torch.numel(net.module._classification.weight)
-    balanced_accuracy = balanced_accuracy_score(y_trues, y_preds_classes)
-    info["balanced_accuracy"] = balanced_accuracy
-    print("Balanced accuracy ", info["balanced_accuracy"])
 
     if net.module._num_classes == 2:
         tp = cm[0][0]
@@ -128,6 +123,8 @@ def eval_pipnet(
         specificity = tn/(tn+fp)
         info["sensititvity"] = sensitivity
         info["specificity"] = specificity
+        balanced_accuracy = balanced_accuracy_score(y_trues, y_preds_classes)
+        info["balanced_accuracy"] = balanced_accuracy
         print("\n Epoch",epoch, flush=True)
         print("TP: ", tp, "FN: ", fn, "FP:", fp, "TN:", tn, flush=True)
         info['top3_accuracy'] = f1_score(y_trues, y_preds_classes)
@@ -186,34 +183,24 @@ def get_local_explanations(
     
     print("Detect prototypes in predictions...", flush = True)
 
-    dir = os.path.join(args.log_dir, "clinical_feedback_local_explanations")
-    if plot:
-        if not os.path.exists(dir):
-            os.makedirs(dir)
-        plot_dir = os.path.join(dir, "plots")
-        if not os.path.exists(plot_dir):
-            os.makedirs(plot_dir)
-
     local_explanations = []
     y_preds = []
     y_trues = []
     
     patchsize, skip_z, skip_y, skip_x = get_patch_size(args)
 
-    imgs = [(img, label, sub) for img, label, sub in zip(projectloader.dataset.img_dir, projectloader.dataset.img_labels, projectloader.dataset.subjects)]
+    imgs = [(img, label) for img, label in zip(projectloader.dataset.img_dir, projectloader.dataset.img_labels)]
     
     # Make sure the model is in evaluation mode
     net.eval()
     classification_weights = net.module._classification.weight
 
     img_iter = enumerate(iter(projectloader))
-    count = 0
     
     for k, (xs, ys) in img_iter: # shuffle is false so should lead to same order as in imgs
         
         xs, ys = xs.to(device), ys.to(device)
         img = imgs[k][0]
-        sub = imgs[k][2]
         
         local_explanation = dict() # dict of all detected prototypes
         
@@ -257,10 +244,7 @@ def get_local_explanations(
                             h_idx = max_idx_h[w_idx].item()
                             d_idx = max_idx_hw[h_idx, w_idx].item()
                             
-                            # img_np = np.expand_dims(np.load(img),axis=0)
-                            img_nib = nib.load(img)
-                            img_np = img_nib.get_fdata(dtype=np.float32)
-                            img_np = np.expand_dims(img_np, axis=0)
+                            img_np = np.expand_dims(np.load(img),axis=0)
                             img_tensor = transforms.RepeatChannel(repeats = args.channels)(img_np)
                             
                             img_tensor = transforms.Resize(spatial_size = (args.slices, args.rows, args.cols))(img_tensor)
@@ -280,21 +264,7 @@ def get_local_explanations(
         title = "Prediction " + str(ys_pred.item()) + "\n Detected PS: " + str(local_explanation.keys())
         
         if plot:
-            if count % 1000 == 0:
-                subj = sub
-                pattern_exam = r"/adni/([^/]+)/mri/"
-                img_name_exam = re.search(pattern_exam, img)
-                if img_name_exam:
-                    exam = img_name_exam.group(1)  # bara själva ID:t
-                else:
-                    exam = None
-                
-                ps_name = subj + "_" + exam
-                plot_name = ps_name + ".png"
-                plot_path = os.path.join(plot_dir, plot_name)
-                plot_local_explanation(xs.cpu(), local_explanation, title=title, save_path=plot_path)
-        
-        count += 1
+            plot_local_explanation(xs.cpu(), local_explanation, title=title)
         
     return local_explanations, y_preds, y_trues
                         
@@ -366,10 +336,7 @@ def check_empty_prototypes(args, net, img_prototype_top1, proto_coord_top1):
             img_name = img_prototype_top1[p][0] # numpy array directory
             ps_coord = proto_coord_top1[p][0]
                  
-            # img_np = np.expand_dims(np.load(img_name), axis=0)
-            img_nib = nib.load(img_name)
-            img_np = img_nib.get_fdata(dtype=np.float32)
-            img_np = np.expand_dims(img_np, axis=0)
+            img_np = np.expand_dims(np.load(img_name), axis=0)
             img_min = img_np.min()
             img_max = img_np.max()
             img_np = (img_np-img_min)/(img_max-img_min)
@@ -552,4 +519,11 @@ def eval_ood(net,
     print("PIP-Net abstained from a decision for", abstained.item(), "images", flush=True)
     
     return predicted_as_id/seen
-
+    
+    
+    
+    
+    
+    
+    
+    

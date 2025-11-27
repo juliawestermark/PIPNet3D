@@ -21,16 +21,16 @@ from sklearn.metrics import balanced_accuracy_score
 from sklearn.metrics import f1_score
 from copy import deepcopy
 
-# sys.path.append("/home/lisadesanti/DeepLearning/ADNI/3DPIPNet/src/")
+sys.path.append("/home/lisadesanti/DeepLearning/ADNI/3DPIPNet/src/")
 from utils import plot_rgb_slices, get_args, save_args, Log
-# sys.path.append("/home/lisadesanti/DeepLearning/ADNI/3DPIPNet/src/data/")
+sys.path.append("/home/lisadesanti/DeepLearning/ADNI/3DPIPNet/src/data/")
 from make_dataset import get_dataloaders
-# sys.path.append("/home/lisadesanti/DeepLearning/ADNI/3DPIPNet/src/models/")
+sys.path.append("/home/lisadesanti/DeepLearning/ADNI/3DPIPNet/src/models/")
 from model_builder import load_trained_pipnet
 from test_model import eval_pipnet
 from test_model import get_thresholds, eval_ood
 
-# sys.path.append("/home/lisadesanti/DeepLearning/ADNI/3DPIPNet/src/visualization/")
+sys.path.append("/home/lisadesanti/DeepLearning/ADNI/3DPIPNet/src/visualization/")
 from vis_pipnet import visualize_topk
 
 

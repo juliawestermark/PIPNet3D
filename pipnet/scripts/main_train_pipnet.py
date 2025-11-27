@@ -36,7 +36,6 @@ backbone_dic = {1:"resnet3D_18_kin400", 2:"convnext3D_tiny"}
 
 current_fold = 1
 net = backbone_dic[1]
-net_name = net
 task_performed = "train_pipnet_alzheimer_mri"
 
 args = get_args(current_fold, net, task_performed)
@@ -70,14 +69,6 @@ image, labels = next(iter(projectloader))
 
 if not os.path.isdir(args.log_dir):
     os.mkdir(args.log_dir)
-if not os.path.isdir(args.model_path):
-    os.mkdir(args.model_path)
-model_folder_short = args.model_path + '/models/binary'
-if not os.path.isdir(model_folder_short):
-    os.mkdir(model_folder_short)
-model_folder = model_folder_short + "/" + net_name
-if not os.path.isdir(model_folder):
-    os.mkdir(model_folder)
 
 
 # Set the device
@@ -238,7 +229,7 @@ if args.state_dict_dir_net == '':
 with torch.no_grad():
     if args.epochs_pretrain > 0:
         print("Visualize top-k")
-        topks, img_prototype, proto_coord = visualize_topk(net, projectloader, len(args.dic_classes), device, 'visualised_pretrained_prototypes_topk', args, save=False, plot=False)
+        topks, img_prototype, proto_coord = visualize_topk(net, projectloader, len(args.dic_classes), device, 'visualised_pretrained_prototypes_topk', args, save=False)
  
     
 #%% PHASE (2): Training PIPNet
@@ -256,9 +247,9 @@ scheduler_net = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer_net, T_max 
 # Scheduler for the classification layer is with restarts, such that the 
 # model can re-active zeroed-out prototypes. Hence an intuitive choice. 
 if args.epochs <= 30:
-    scheduler_classifier = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer_classifier, T_0 = 5, eta_min = 0.001, T_mult = 1)
+    scheduler_classifier = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer_classifier, T_0 = 5, eta_min = 0.001, T_mult = 1, verbose = False)
 else:
-    scheduler_classifier = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer_classifier, T_0 = 10, eta_min = 0.001, T_mult = 1)
+    scheduler_classifier = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer_classifier, T_0 = 10, eta_min = 0.001, T_mult = 1, verbose = False)
         
 for param in net.module.parameters():
     param.requires_grad = False
@@ -354,9 +345,7 @@ for epoch in range(1, args.epochs + 1):
             # Save pipnet weights which obtained highest balanced accuracy in the validation set
             net.eval()
             torch.save({'model_state_dict': net.state_dict(), 'optimizer_net_state_dict': optimizer_net.state_dict(), 'optimizer_classifier_state_dict': optimizer_classifier.state_dict()}, os.path.join(os.path.join(args.log_dir, 'checkpoints'), 'best_pipnet_fold%s'%str(current_fold)))
-
-            model_folder_kfold = os.path.join(model_folder, 'best_pipnet_fold%s'%str(current_fold))
-            torch.save({'model_state_dict': net.state_dict(), 'optimizer_net_state_dict': optimizer_net.state_dict(), 'optimizer_classifier_state_dict': optimizer_classifier.state_dict()}, model_folder_kfold)
+            torch.save({'model_state_dict': net.state_dict(), 'optimizer_net_state_dict': optimizer_net.state_dict(), 'optimizer_classifier_state_dict': optimizer_classifier.state_dict()}, os.path.join(os.path.join(args.root_folder, 'models/binary', net), 'best_pipnet_fold%s'%str(current_fold)))
 
         if epoch%30 == 0:
             net.eval()
@@ -373,7 +362,7 @@ for epoch in range(1, args.epochs + 1):
 net.eval()
 torch.save({'model_state_dict': net.state_dict(), 'optimizer_net_state_dict': optimizer_net.state_dict(), 'optimizer_classifier_state_dict': optimizer_classifier.state_dict()}, os.path.join(os.path.join(args.log_dir, 'checkpoints'),'net_trained_last'))
 
-topks, img_prototype, proto_coord = visualize_topk(net, projectloader, args.num_classes, device, 'visualised_prototypes_topk', args, save=False, plot=True)
+topks, img_prototype, proto_coord = visualize_topk(net, projectloader, args.num_classes, device, 'visualised_prototypes_topk', args, save=False)
 
 # set weights of prototypes that are never really found in projection set to 0
 set_to_zero = []
@@ -405,4 +394,31 @@ for c in range(net.module._classification.weight.shape[0]):
             relevant_ps.append((p, proto_weights[p].item()))
     if args.test_split == 0.:
         print("Class", c, "(", list(testloader.dataset.class_to_idx.keys())[list(testloader.dataset.class_to_idx.values()).index(c)], "):", "has", len(relevant_ps), "relevant prototypes: ", relevant_ps, flush=True)
+        
+    
+
+
+    
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 

@@ -151,8 +151,7 @@ info = eval_pipnet(
 for elem in info.items():
     print(elem)
     
-# TODO: the code doesnt run past this point, it just stays in this loop
-local_explanations_test, y_preds_test, y_trues_test = get_local_explanations(pipnet, testloader, device, args, plot=True)
+local_explanations_test, y_preds_test, y_trues_test = get_local_explanations(pipnet, testloader, device, args)
 
 
 #%% Evaluate the prototypes extracted

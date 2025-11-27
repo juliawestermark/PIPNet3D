@@ -20,7 +20,6 @@ import monai.transforms as transforms
 import torchvision
 from plot_utils import plot_3d_slices, plot_rgb_slices, generate_rgb_array, plot_atlas_overlay
 import random
-import nibabel as nib
 
 
 
@@ -109,17 +108,9 @@ def visualize_topk(
     
     print("Visualizing prototypes for topk...", flush = True)
     dir = os.path.join(args.log_dir, foldername)
-    if save or plot:
+    if save:
         if not os.path.exists(dir):
             os.makedirs(dir)
-    save_dir = os.path.join(dir, "saved")
-    if save:
-        if not os.path.exists(save_dir):
-            os.makedirs(save_dir)
-    plot_dir = os.path.join(dir, "plots")
-    if plot:
-        if not os.path.exists(plot_dir):
-            os.makedirs(plot_dir)
 
     near_imgs_dirs = dict()
     seen_max = dict()
@@ -128,7 +119,6 @@ def visualize_topk(
     tensors_per_prototype = dict()
     img_prototype = dict()
     proto_coord = dict()
-    subject_id = dict()
     
     for p in range(net.module._num_prototypes):
         near_imgs_dir = os.path.join(dir, str(p))
@@ -139,11 +129,10 @@ def visualize_topk(
         tensors_per_prototype[p] = []
         img_prototype[p] = []
         proto_coord[p] = []
-        subject_id[p] = []
     
     patchsize, skip_z, skip_y, skip_x = get_patch_size(args)
 
-    imgs = [(img, label, sub) for img, label, sub in zip(projectloader.dataset.img_dir, projectloader.dataset.img_labels, projectloader.dataset.subjects)]
+    imgs = [(img, label) for img, label in zip(projectloader.dataset.img_dir, projectloader.dataset.img_labels)]
     
     # Make sure the model is in evaluation mode
     net.eval()
@@ -266,16 +255,12 @@ def visualize_topk(
                                 h_idx = max_idx_per_prototype_h[p, max_idx_per_prototype_w[p]].item()
                                 w_idx = max_idx_per_prototype_w[p].item()
                                 img_to_open = imgs[i]
-                                sub_id = ""
                                 
                                 if isinstance(img_to_open, tuple) or isinstance(img_to_open, list): 
                                     # dataset contains tuples of (img, label)
-                                    sub_id = img_to_open[2]
                                     img_to_open = img_to_open[0]
                                 
-                                img_nib = nib.load(img_to_open)
-                                img_np = img_nib.get_fdata(dtype=np.float32)
-                                img_np = np.expand_dims(img_np, axis=0)
+                                img_np = np.expand_dims(np.load(img_to_open), axis=0)
                                 img_min = img_np.min()
                                 img_max = img_np.max()
                                 img_np = (img_np-img_min)/(img_max-img_min)
@@ -301,7 +286,6 @@ def visualize_topk(
                                 tensors_per_prototype[p].append(img_tensor_patch.array)
                                 img_prototype[p].append(img_to_open)
                                 proto_coord[p].append(ps_coord)
-                                subject_id[p].append(sub_id)
                                 
 
     print("Abstained: ", abstained, flush = True)
@@ -314,13 +298,10 @@ def visualize_topk(
         if saved[p] > 0:
             
             text = "f_" + str(args.current_fold) + " p_" + str(p)
-            count = 0
             
-            for img_name, tensor, ps_coord, sub_id in zip(img_prototype[p], tensors_per_prototype[p], proto_coord[p], subject_id[p]):
-                
-                img_nib = nib.load(img_name)
-                img_np = img_nib.get_fdata(dtype=np.float32)
-                img_np = np.expand_dims(img_np, axis=0)
+            for img_name, tensor, ps_coord in zip(img_prototype[p], tensors_per_prototype[p], proto_coord[p]):
+                 
+                img_np = np.expand_dims(np.load(img_name), axis=0)
                 img_min = img_np.min()
                 img_max = img_np.max()
                 img_np = (img_np-img_min)/(img_max-img_min)
@@ -348,41 +329,37 @@ def visualize_topk(
                 img_tensor[edges_mask] = 1.
                 image = img_tensor.detach().cpu().numpy() # shape: (1, 3, slices, rows, cols)
                 
-                subj = sub_id
-                pattern_exam = r"/adni/([^/]+)/mri/"
+                pattern_subj = r"/(\d+)_S_(\d+)/"
+                img_name_subj = re.search(pattern_subj, img_name)
+                subj = img_name[img_name_subj.span()[0]+1: img_name_subj.span()[1]-1]
+                pattern_exam = r"/I(\d+).npy"
                 img_name_exam = re.search(pattern_exam, img_name)
-                if img_name_exam:
-                    exam = img_name_exam.group(1)
-                else:
-                    exam = None
+                exam = img_name[img_name_exam.span()[0]+1: img_name_exam.span()[1]]
+                    
+                ps_name = text + "_" + subj + "_" + exam
+                ps_patch_name = text + "_patch_" + subj + "_" + exam
                 
-                ps_name = subj + "_" + exam
-                ps_patch_name = "patch_" + subj + "_" + exam
-
-                plot_name = ps_name + ".png"
-                plot_patch_name = ps_patch_name + ".png"
+                plot_name = dir + "/" + ps_name[:-4] + ".png"
+                plot_patch_name = dir + "/" + ps_patch_name[:-4] + ".png"
                 
-                if count % 1000 == 0:
-                    if plot:
-                        plot_rgb_slices(image[0,:,:,:,:], title = "Prototype%s"%str(p), num_columns = 10, bottom=True, save_path=os.path.join(plot_dir, plot_name))   
-                        plot_3d_slices(tensor[0,:,:,:], title = "Prototype %s"%str(p), num_columns = 6, bottom=True, save_path=os.path.join(plot_dir, plot_patch_name))
-                        #plot_atlas_overlay(tensor[0,:,:,:], ps_coord, num_columns = 6,)
-                        
-                    if save:
-                        np.save(os.path.join(save_dir, ps_name), image[0,:,:,:,:])
-                        np.save(os.path.join(save_dir, ps_patch_name), tensor[:,:,:,:])
+                if plot:
+                    plot_rgb_slices(image[0,:,:,:,:], title = "Prototype%s"%str(p), num_columns = 10, bottom=True)   
+                    plot_3d_slices(tensor[0,:,:,:], title = "Prototype %s"%str(p), num_columns = 6, bottom=True)
+                    #plot_atlas_overlay(tensor[0,:,:,:], ps_coord, num_columns = 6,)
+                    
+                if save:
+                    np.save(os.path.join(dir, ps_name), image[0,:,:,:,:])
+                    np.save(os.path.join(dir, ps_patch_name), tensor[:,:,:,:])
                         
                 if saved[p] >= k:
                     all_tensors += tensors_per_prototype[p]
-                
-                count += 1
 
         
     return topks, img_prototype, proto_coord
 
 
 
-def plot_local_explanation(xs, local_explanation, title="", save_path=""):
+def plot_local_explanation(xs, local_explanation, title=""):
     """
     Mark all the detected relevant prototypes in xs with a volume of 
     interest 
@@ -447,6 +424,6 @@ def plot_local_explanation(xs, local_explanation, title="", save_path=""):
         xs[edges_mask_b] = rgb_colors[i][2]
         
         
-    plot_rgb_slices(np.array(xs[0,:,:,:,:]), title=title, legend=ps_scores, save_path=save_path)
+    plot_rgb_slices(np.array(xs[0,:,:,:,:]), title=title, legend=ps_scores)
 
 
