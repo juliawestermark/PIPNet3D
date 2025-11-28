@@ -114,6 +114,7 @@ def eval_pipnet(
     f1 = 'binary' if net.module._num_classes == 2 else 'weighted'
     info["f1"] = f1_score(y_trues, y_preds_classes, average=f1)
     info["sparsity"] = (torch.numel(net.module._classification.weight) - torch.count_nonzero(torch.nn.functional.relu(net.module._classification.weight-1e-3)).item()) / torch.numel(net.module._classification.weight)
+    info["balanced_accuracy"] = balanced_accuracy_score(y_trues, y_preds_classes)
 
     if net.module._num_classes == 2:
         tp = cm[0][0]
@@ -124,8 +125,8 @@ def eval_pipnet(
         specificity = tn/(tn+fp)
         info["sensititvity"] = sensitivity
         info["specificity"] = specificity
-        balanced_accuracy = balanced_accuracy_score(y_trues, y_preds_classes)
-        info["balanced_accuracy"] = balanced_accuracy
+        # balanced_accuracy = balanced_accuracy_score(y_trues, y_preds_classes)
+        # info["balanced_accuracy"] = balanced_accuracy
         print("\n Epoch",epoch, flush=True)
         print("TP: ", tp, "FN: ", fn, "FP:", fp, "TN:", tn, flush=True)
         info['top3_accuracy'] = f1_score(y_trues, y_preds_classes)
