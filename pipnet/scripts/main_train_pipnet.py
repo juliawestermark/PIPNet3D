@@ -36,6 +36,7 @@ backbone_dic = {1:"resnet3D_18_kin400", 2:"convnext3D_tiny"}
 
 current_fold = 1
 net = backbone_dic[1]
+net_name = net
 task_performed = "train_pipnet_alzheimer_mri"
 
 args = get_args(current_fold, net, task_performed)
@@ -247,9 +248,9 @@ scheduler_net = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer_net, T_max 
 # Scheduler for the classification layer is with restarts, such that the 
 # model can re-active zeroed-out prototypes. Hence an intuitive choice. 
 if args.epochs <= 30:
-    scheduler_classifier = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer_classifier, T_0 = 5, eta_min = 0.001, T_mult = 1, verbose = False)
+    scheduler_classifier = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer_classifier, T_0 = 5, eta_min = 0.001, T_mult = 1)
 else:
-    scheduler_classifier = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer_classifier, T_0 = 10, eta_min = 0.001, T_mult = 1, verbose = False)
+    scheduler_classifier = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer_classifier, T_0 = 10, eta_min = 0.001, T_mult = 1)
         
 for param in net.module.parameters():
     param.requires_grad = False
@@ -345,7 +346,7 @@ for epoch in range(1, args.epochs + 1):
             # Save pipnet weights which obtained highest balanced accuracy in the validation set
             net.eval()
             torch.save({'model_state_dict': net.state_dict(), 'optimizer_net_state_dict': optimizer_net.state_dict(), 'optimizer_classifier_state_dict': optimizer_classifier.state_dict()}, os.path.join(os.path.join(args.log_dir, 'checkpoints'), 'best_pipnet_fold%s'%str(current_fold)))
-            torch.save({'model_state_dict': net.state_dict(), 'optimizer_net_state_dict': optimizer_net.state_dict(), 'optimizer_classifier_state_dict': optimizer_classifier.state_dict()}, os.path.join(os.path.join(args.root_folder, 'models/binary', net), 'best_pipnet_fold%s'%str(current_fold)))
+            torch.save({'model_state_dict': net.state_dict(), 'optimizer_net_state_dict': optimizer_net.state_dict(), 'optimizer_classifier_state_dict': optimizer_classifier.state_dict()}, os.path.join(os.path.join(args.model_path, 'binary', net_name), 'best_pipnet_fold%s'%str(current_fold)))
 
         if epoch%30 == 0:
             net.eval()

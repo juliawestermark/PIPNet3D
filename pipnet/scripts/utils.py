@@ -31,17 +31,23 @@ def get_args(
     Utility functions for handling parsed arguments """
 
     net_dic = {"resnet3D_18_kin400":3, "convnext3D_tiny":1}
-    dic_classes = {"CN":0, "AD":1} 
+    dic_classes = {"CN":0, "AD":1} # {"CN":0, "MCI": 1, "AD":2}
     
-    root_folder = "/home/lisadesanti/DeepLearning/ADNI/PIPNet3D/pipnet"
-    dataset_path = "/home/lisadesanti/DeepLearning/ADNI/ADNI_DATASET/ADNI_MRI_preprocessed"
-    metadata_path = "/home/lisadesanti/DeepLearning/ADNI/ADNI_DATASET/ADNI1_Screening_1.5T_8_21_2023.csv"
+    # root_folder = "/home/lisadesanti/DeepLearning/ADNI/PIPNet3D/pipnet"
+    # dataset_path = "/home/lisadesanti/DeepLearning/ADNI/ADNI_DATASET/ADNI_MRI_preprocessed"
+    # metadata_path = "/home/lisadesanti/DeepLearning/ADNI/ADNI_DATASET/ADNI1_Screening_1.5T_8_21_2023.csv"
+
+    root_folder = "/home/maia-user/PIPNet3D/"
+    # root_folder = "/proj/berzbiomedicalimagingkth/users/x_julwe/PIPNet3D/"
+    dataset_path = "/home/maia-user/ADNI_npy"
+    metadata_path = root_folder
+    model_path = os.path.join(root_folder, "pipnet", "models")
     
-    n_fold = 5           # Number of fold
+    n_fold = 1           # Number of fold
     test_split = 0.2
     seed = 42            # seed for reproducible shuffling
     
-    downscaling = 2
+    downscaling = 4
     rows = int(229/downscaling)
     cols = int(193/downscaling)
     slices = int(160/downscaling)
@@ -54,8 +60,8 @@ def get_args(
     
     batch_size_pretrain = 12
     batch_size = 12
-    epochs_pretrain = 10
-    epochs = 60
+    epochs_pretrain = 1 #10
+    epochs = 2 #60
     optimizer = "Adam"
     lr = 0.05
     lr_age = 0.1
@@ -66,6 +72,7 @@ def get_args(
     freeze_epochs = 10
     gamma = 0.1             # LR's decay factor
     step_size = 7           # LR's frequency decay
+    num_workers = 2
         
     parser = argparse.ArgumentParser('Train a PIP-Net')
     parser.add_argument('--task_performed', type = str, default = task_performed, help = 'String which differentiates between Black-box vs PIPNet training')     
@@ -109,9 +116,10 @@ def get_args(
     parser.add_argument('--disable_pretrained', action = 'store_true', help = 'When set, the backbone network is initialized with random weights instead of being pretrained on another dataset).')
     parser.add_argument('--weighted_loss', action = 'store_true', help = 'Flag that weights the loss based on the class balance of the dataset. Recommended to use when data is imbalanced. ')
     parser.add_argument('--gpu_ids', type = str, default = '', help = 'ID of gpu. Can be separated with comma')
-    parser.add_argument('--num_workers', type = int, default = 2, help = 'Num workers in dataloaders.')
+    parser.add_argument('--num_workers', type = int, default = num_workers, help = 'Num workers in dataloaders.')
     parser.add_argument('--bias', default = False, action = 'store_true', help = 'Flag that indicates whether to include a trainable bias in the linear classification layer.')
     parser.add_argument('--extra_test_image_folder', type = str, default = './experiments', help = 'Folder with images that PIP-Net will predict and explain, that are not in the training or test set. E.g. images with 2 objects or OOD image. Images should be in subfolder. E.g. images in ./experiments/images/, and argument --./experiments')
+    parser.add_argument('--model_path', type = str, default = model_path, help = 'The models folder')
 
     args = parser.parse_args()
     

@@ -7,6 +7,7 @@ Created on Thu Nov 30 14:19:24 2023
 """
 
 import sys
+import os
 from copy import deepcopy
 import torch
 import torchvision.models as models
@@ -22,8 +23,9 @@ from convnext_features import convnext_tiny_3d
     
 def load_trained_pipnet(args):
     
-    models_folder = "/home/lisadesanti/DeepLearning/ADNI/PIPNet3D/pipnet/models/binary/"
-    model_path = models_folder + args.net + "/best_pipnet_fold%s"%str(args.current_fold)
+    models_folder = os.path.join(args.model_path, "binary")
+    # models_folder = "/home/lisadesanti/DeepLearning/ADNI/PIPNet3D/pipnet/models/binary/"
+    model_path = models_folder + "/" + args.net + "/best_pipnet_fold%s"%str(args.current_fold)
 
     device, device_ids = set_device(args)
      

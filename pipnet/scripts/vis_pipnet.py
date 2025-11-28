@@ -20,6 +20,7 @@ import monai.transforms as transforms
 import torchvision
 from plot_utils import plot_3d_slices, plot_rgb_slices, generate_rgb_array, plot_atlas_overlay
 import random
+from tqdm.auto import tqdm
 
 
 
@@ -108,9 +109,17 @@ def visualize_topk(
     
     print("Visualizing prototypes for topk...", flush = True)
     dir = os.path.join(args.log_dir, foldername)
-    if save:
+    if save or plot:
         if not os.path.exists(dir):
             os.makedirs(dir)
+    save_dir = os.path.join(dir, "saved")
+    if save:
+        if not os.path.exists(save_dir):
+            os.makedirs(save_dir)
+    plot_dir = os.path.join(dir, "plots")
+    if plot:
+        if not os.path.exists(plot_dir):
+            os.makedirs(plot_dir)
 
     near_imgs_dirs = dict()
     seen_max = dict()
@@ -139,7 +148,10 @@ def visualize_topk(
     classification_weights = net.module._classification.weight
 
     # Show progress on progress bar
-    img_iter = enumerate(iter(projectloader))
+    # img_iter = enumerate(iter(projectloader))
+    desc_text = f"Search top{k} activated images for each relevant prototypes"
+    img_iter = tqdm(enumerate(projectloader), total=len(projectloader), desc=desc_text, mininterval=2., ncols=0)
+    
     
     # Iterate through the data
     images_seen = 0
@@ -148,7 +160,7 @@ def visualize_topk(
     # Iterate through the training set
     for i, (xs, ys) in img_iter:
         
-        print("Search top%s"%str(k)," activated images for each relevant prototypes,", "current image", i, flush=True)
+        # print("Search top%s"%str(k)," activated images for each relevant prototypes,", "current image", i, flush=True)
         images_seen += 1
         xs, ys = xs.to(device), ys.to(device)
 
@@ -211,11 +223,14 @@ def visualize_topk(
     abstained = 0
     
 
-    img_iter = enumerate(iter(projectloader))
+    # img_iter = enumerate(iter(projectloader))
+    desc_text = f"Localize each relevant prototype with similarity > 0.1 as a patch of the top{k} activated images in the training set"
+    img_iter = tqdm(enumerate(projectloader), total=len(projectloader), desc=desc_text, mininterval=2., ncols=0)
+    
 
     for i, (xs, ys) in img_iter:
         
-        print("Localize each relevant prototype with similarity > 0.1 as a", "patch of the topk activated images in the training set,", i, flush=True)
+        # print("Localize each relevant prototype with similarity > 0.1 as a", "patch of the topk activated images in the training set,", i, flush=True)
         
         # shuffle is false so should lead to same order as in imgs
         if i in alli:
@@ -291,13 +306,14 @@ def visualize_topk(
     print("Abstained: ", abstained, flush = True)
     all_tensors = []
     
-    for p in range(net.module._num_prototypes):
+    # for p in range(net.module._num_prototypes):
+    for p in tqdm(range(net.module._num_prototypes), desc="Processing prototypes"):
         
         # print("Plot prototypes", p, flush=True)
         
         if saved[p] > 0:
             
-            text = "f_" + str(args.current_fold) + " p_" + str(p)
+            text = "f_" + str(args.current_fold) + "_p_" + str(p)
             
             for img_name, tensor, ps_coord in zip(img_prototype[p], tensors_per_prototype[p], proto_coord[p]):
                  
@@ -332,24 +348,25 @@ def visualize_topk(
                 pattern_subj = r"/(\d+)_S_(\d+)/"
                 img_name_subj = re.search(pattern_subj, img_name)
                 subj = img_name[img_name_subj.span()[0]+1: img_name_subj.span()[1]-1]
-                pattern_exam = r"/I(\d+).npy"
+                # pattern_exam = r"/I(\d+).npy"
+                pattern_exam = r"[0-9a-fA-F-]{36}(?=\.npy$)"
                 img_name_exam = re.search(pattern_exam, img_name)
                 exam = img_name[img_name_exam.span()[0]+1: img_name_exam.span()[1]]
                     
                 ps_name = text + "_" + subj + "_" + exam
                 ps_patch_name = text + "_patch_" + subj + "_" + exam
                 
-                plot_name = dir + "/" + ps_name[:-4] + ".png"
-                plot_patch_name = dir + "/" + ps_patch_name[:-4] + ".png"
+                plot_name = plot_dir + "/" + ps_name[:-4] + ".png"
+                plot_patch_name = plot_dir + "/" + ps_patch_name[:-4] + ".png"
                 
                 if plot:
-                    plot_rgb_slices(image[0,:,:,:,:], title = "Prototype%s"%str(p), num_columns = 10, bottom=True)   
-                    plot_3d_slices(tensor[0,:,:,:], title = "Prototype %s"%str(p), num_columns = 6, bottom=True)
+                    plot_rgb_slices(image[0,:,:,:,:], title = "Prototype%s"%str(p), num_columns = 10, bottom=True, save_path=plot_name)   
+                    plot_3d_slices(tensor[0,:,:,:], title = "Prototype %s"%str(p), num_columns = 6, bottom=True, save_path=plot_patch_name)
                     #plot_atlas_overlay(tensor[0,:,:,:], ps_coord, num_columns = 6,)
                     
                 if save:
-                    np.save(os.path.join(dir, ps_name), image[0,:,:,:,:])
-                    np.save(os.path.join(dir, ps_patch_name), tensor[:,:,:,:])
+                    np.save(os.path.join(save_dir, ps_name), image[0,:,:,:,:])
+                    np.save(os.path.join(save_dir, ps_patch_name), tensor[:,:,:,:])
                         
                 if saved[p] >= k:
                     all_tensors += tensors_per_prototype[p]
@@ -359,7 +376,7 @@ def visualize_topk(
 
 
 
-def plot_local_explanation(xs, local_explanation, title=""):
+def plot_local_explanation(xs, local_explanation, title="", save_path=None):
     """
     Mark all the detected relevant prototypes in xs with a volume of 
     interest 
@@ -424,6 +441,6 @@ def plot_local_explanation(xs, local_explanation, title=""):
         xs[edges_mask_b] = rgb_colors[i][2]
         
         
-    plot_rgb_slices(np.array(xs[0,:,:,:,:]), title=title, legend=ps_scores)
+    plot_rgb_slices(np.array(xs[0,:,:,:,:]), title=title, legend=ps_scores, save_path=save_path)
 
 

@@ -9,6 +9,7 @@ from torch.utils.data import DataLoader
 import torch.nn.functional as F
 from tqdm.auto import tqdm
 import monai.transforms as transforms
+import re
 
 from sklearn.metrics import accuracy_score
 from sklearn.metrics import roc_auc_score
@@ -183,6 +184,14 @@ def get_local_explanations(
     
     print("Detect prototypes in predictions...", flush = True)
 
+    dir = os.path.join(args.log_dir, "clinical_feedback_local_explanations")
+    if plot:
+        if not os.path.exists(dir):
+            os.makedirs(dir)
+        plot_dir = os.path.join(dir, "plots")
+        if not os.path.exists(plot_dir):
+            os.makedirs(plot_dir)
+
     local_explanations = []
     y_preds = []
     y_trues = []
@@ -195,7 +204,8 @@ def get_local_explanations(
     net.eval()
     classification_weights = net.module._classification.weight
 
-    img_iter = enumerate(iter(projectloader))
+    # img_iter = enumerate(iter(projectloader))
+    img_iter = tqdm(enumerate(projectloader), total=len(projectloader), desc="Processing images", mininterval=5., ncols=0)
     
     for k, (xs, ys) in img_iter: # shuffle is false so should lead to same order as in imgs
         
@@ -264,7 +274,21 @@ def get_local_explanations(
         title = "Prediction " + str(ys_pred.item()) + "\n Detected PS: " + str(local_explanation.keys())
         
         if plot:
-            plot_local_explanation(xs.cpu(), local_explanation, title=title)
+            img_name = img = imgs[k][0]
+            pattern_subj = r"/(\d+)_S_(\d+)/"
+            img_name_subj = re.search(pattern_subj, img_name)
+            subj = img_name[img_name_subj.span()[0]+1: img_name_subj.span()[1]-1]
+            # pattern_exam = r"/I(\d+).npy"
+            pattern_exam = r"[0-9a-fA-F-]{36}(?=\.npy$)"
+            img_name_exam = re.search(pattern_exam, img_name)
+            exam = img_name[img_name_exam.span()[0]+1: img_name_exam.span()[1]]
+            text = "local_expl_"
+            ps_name = text + subj + "_" + exam
+            # ps_patch_name = "patch_" + subj + "_" + exam
+            
+            plot_name = plot_dir + "/" + ps_name[:-4] + ".png"
+            # plot_patch_name = plot_dir + "/" + ps_patch_name[:-4] + ".png"
+            plot_local_explanation(xs.cpu(), local_explanation, title=title, save_path=plot_name)
         
     return local_explanations, y_preds, y_trues
                         
@@ -285,7 +309,8 @@ def eval_local_explanations(
     ps_cc_coords = {ps:[] for ps in relevant_ps}
     ps_scores = {ps:[] for ps in relevant_ps}
     
-    for i, local_explanation in enumerate(local_explanations):
+    # for i, local_explanation in enumerate(local_explanations):
+    for i, local_explanation in tqdm(enumerate(local_explanations), total=len(local_explanations), desc="Processing explanations", mininterval=5., ncols=0):
         
         proto_found = list(local_explanation.keys())
         proto_found.sort()
@@ -328,10 +353,11 @@ def eval_local_explanations(
 def check_empty_prototypes(args, net, img_prototype_top1, proto_coord_top1):
     
     empty_ps = []
-    for p in range(net.module._num_prototypes):
+    # for p in range(net.module._num_prototypes):
+    for p in tqdm(range(net.module._num_prototypes), desc="Check prototypes"):
         
         if img_prototype_top1[p]:
-            print("Check prototype %s"%str(p))
+            # print("Check prototype %s"%str(p))
             
             img_name = img_prototype_top1[p][0] # numpy array directory
             ps_coord = proto_coord_top1[p][0]

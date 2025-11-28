@@ -81,6 +81,7 @@ def plot_3d_slices(data, num_columns=10, cmap="gray", title=False, data_min=Fals
         plt.savefig(save_path)
         
     plt.show()
+    plt.close(f)
     
 
 def plot_rgb_slices(data, num_columns=10, title=False, save_path=False, bottom=False, legend=False):
@@ -142,6 +143,7 @@ def plot_rgb_slices(data, num_columns=10, title=False, save_path=False, bottom=F
         f.savefig(save_path, bbox_inches='tight')
         
     plt.show()
+    plt.close(f)
 
 
 def plot_atlas_overlay(data, data_atlas, num_columns=10, title=False,):
@@ -179,11 +181,11 @@ def plot_atlas_overlay(data, data_atlas, num_columns=10, title=False,):
             if rows_data > 1:
                 img1 = axarr[i, j].imshow(data[i][j], cmap=plt.cm.gray, alpha=0.7,)
                 img2 = axarr[i, j].imshow(data_atlas[i][j], cmap=plt.cm.jet, alpha=0.3,)
-                axarr[i, j].axis("off");
+                axarr[i, j].axis("off")
             else:
                 img1 = axarr[j].imshow(data[i][j], cmap=plt.cm.gray, alpha=0.7,)
                 img2 = axarr[j].imshow(data_atlas[i][j], cmap=plt.cm.jet, alpha=0.3,)
-                axarr[j].axis("off");
+                axarr[j].axis("off")
     
     plt.subplots_adjust(wspace=0, hspace=0, left=0, right = 0.9, bottom=0, top=0.9)
     
@@ -191,3 +193,4 @@ def plot_atlas_overlay(data, data_atlas, num_columns=10, title=False,):
         f.suptitle(title)
     
     plt.show()
+    plt.close(f)
