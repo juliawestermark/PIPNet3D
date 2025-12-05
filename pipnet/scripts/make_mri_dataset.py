@@ -1,51 +1,12 @@
-# import argparse
+
 import os
-# import math
-# import numpy as np
-# import random
-# import pandas 
-# import nibabel as nib
-
-# import torch
-# from torch import Tensor
-# import torch.optim
-# import torch.utils.data
-# from torch.utils.data import WeightedRandomSampler
-# import torchvision
-# import torchvision.transforms as transforms
-
-# from monai.transforms import (
-#     Compose,
-#     Resize,
-#     RandRotate,
-#     Affine,
-#     RandGaussianNoise,
-#     RandZoom,
-#     RepeatChannel,
-#     LoadImage,
-#     EnsureChannelFirst,
-#     ScaleIntensity
-# )
-
-# from sklearn.model_selection import train_test_split
 from sklearn.model_selection import StratifiedKFold
-
 
 import logging
 import os
 import pandas as pd
-# from sklearn.model_selection import train_test_split
-
 
 logger = logging.getLogger(__name__)
-
-# ADNI_PATH = "/home/maia-user/ADNI_complete"
-# #ADNI_PATH = "/proj/berzbiomedicalimagingkth/users/x_julwe/ADNI/ADNI_complete"
-# DATA_PATH = os.path.join(ADNI_PATH, "adni")
-# COLLECTION_PATH = os.path.join(ADNI_PATH, "OutputCollection.csv")
-# DEMOGRAPHICS_PATH = os.path.join(ADNI_PATH, "participant_demographics.csv")
-# DXSUM_PATH = os.path.join(ADNI_PATH, "DXSUM_PDXCONV_ADNIALL.csv")
-# MRI_FILENAME = "mri/rescaled_align_norm.nii.gz"
 
 v_map = {
     "v02": 0,
@@ -194,14 +155,14 @@ def get_session_date(row: pd.Series) -> pd.Timestamp:
         return pd.NA
 
 
-def setup_mri_dataframe(classes=["CN", "MCI", "AD"], ADNI_PATH="/home/maia-user/ADNI_complete"):
+def setup_mri_dataframe(classes=["CN", "MCI", "AD"], adni_path="/home/maia-user/ADNI_complete"):
 
     # ADNI_PATH = "/home/maia-user/ADNI_complete"
     #ADNI_PATH = "/proj/berzbiomedicalimagingkth/users/x_julwe/ADNI/ADNI_complete"
-    DATA_PATH = os.path.join(ADNI_PATH, "adni")
-    COLLECTION_PATH = os.path.join(ADNI_PATH, "OutputCollection.csv")
+    DATA_PATH = os.path.join(adni_path, "adni")
+    COLLECTION_PATH = os.path.join(adni_path, "OutputCollection.csv")
     # DEMOGRAPHICS_PATH = os.path.join(ADNI_PATH, "participant_demographics.csv")
-    DXSUM_PATH = os.path.join(ADNI_PATH, "DXSUM_PDXCONV_ADNIALL.csv")
+    DXSUM_PATH = os.path.join(adni_path, "DXSUM_PDXCONV_ADNIALL.csv")
     MRI_FILENAME = "mri/rescaled_align_norm.nii.gz"
 
     # -- Load csv --
@@ -300,14 +261,14 @@ def build_npy_file_path(row, preprocessed_root):
 
     return npy_path
 
-def setup_npy_mri_dataframe(classes=["CN", "MCI", "AD"], ADNI_PATH="/home/maia-user/ADNI_npy"):
+def setup_npy_mri_dataframe(classes=["CN", "MCI", "AD"], adni_path="/home/maia-user/ADNI_npy"):
 
     # ADNI_PATH = "/home/maia-user/ADNI_complete"
     #ADNI_PATH = "/proj/berzbiomedicalimagingkth/users/x_julwe/ADNI/ADNI_complete"
     # DATA_PATH = os.path.join(ADNI_PATH, "adni")
-    COLLECTION_PATH = os.path.join(ADNI_PATH, "csv", "OutputCollection.csv")
+    COLLECTION_PATH = os.path.join(adni_path, "csv", "OutputCollection.csv")
     # DEMOGRAPHICS_PATH = os.path.join(ADNI_PATH, "participant_demographics.csv")
-    DXSUM_PATH = os.path.join(ADNI_PATH, "csv", "DXSUM_PDXCONV_ADNIALL.csv")
+    DXSUM_PATH = os.path.join(adni_path, "csv", "DXSUM_PDXCONV_ADNIALL.csv")
     # MRI_FILENAME = "mri/rescaled_align_norm.nii.gz"
 
     # -- Load csv --
@@ -315,7 +276,7 @@ def setup_npy_mri_dataframe(classes=["CN", "MCI", "AD"], ADNI_PATH="/home/maia-u
     csv_dxsum = pd.read_csv(DXSUM_PATH)
 
     # -- Build filepath and inclusion flags --
-    csv_output_collection["file_path"] = csv_output_collection.apply(build_npy_file_path, args=(ADNI_PATH,), axis=1)
+    csv_output_collection["file_path"] = csv_output_collection.apply(build_npy_file_path, args=(adni_path,), axis=1)
     csv_output_collection["included"] = (
         (csv_output_collection["Job status"] == "completed")
         & csv_output_collection["file_path"].apply(os.path.exists)
@@ -384,4 +345,4 @@ def setup_npy_mri_dataframe(classes=["CN", "MCI", "AD"], ADNI_PATH="/home/maia-u
     })
     mri_merged = mri_merged[mri_merged["clinical_stage"].isin(classes)].reset_index(drop=True)
 
-    return mri_merged[:110]  # TODO: remove. for testing purposes, use only first 100 entries
+    return mri_merged #[:110]  # TODO: remove. for testing purposes, use only first 100 entries

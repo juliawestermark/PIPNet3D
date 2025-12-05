@@ -40,17 +40,18 @@ def get_args(
     root_folder = "/home/maia-user/PIPNet3D/"
     # root_folder = "/proj/berzbiomedicalimagingkth/users/x_julwe/PIPNet3D/"
     dataset_path = "/home/maia-user/ADNI_npy"
+    # dataset_path = "/proj/berzbiomedicalimagingkth/users/x_julwe/ADNI_npy"
     metadata_path = root_folder
     model_path = os.path.join(root_folder, "pipnet", "models")
     
-    n_fold = 1           # Number of fold
+    n_fold = 2           # Number of fold
     test_split = 0.2
     seed = 42            # seed for reproducible shuffling
     
     downscaling = 4
-    rows = int(229/downscaling)
-    cols = int(193/downscaling)
-    slices = int(160/downscaling)
+    # rows = int(229/downscaling)
+    # cols = int(193/downscaling)
+    # slices = int(160/downscaling)
     
     channels = net_dic[net]
     num_age_prototypes = 5
@@ -58,8 +59,8 @@ def get_args(
     out_shape = num_classes
     experiment_folder = os.path.join(root_folder, "results", task_performed, net, "fold_" + str(current_fold))
     
-    batch_size_pretrain = 12
-    batch_size = 12
+    batch_size_pretrain = 2 #12
+    batch_size = 2 #12
     epochs_pretrain = 1 #10
     epochs = 2 #60
     optimizer = "Adam"
@@ -79,11 +80,11 @@ def get_args(
     parser.add_argument('--dataset_path', type = str, default = dataset_path, help = 'Folders path of preprocessed images')
     parser.add_argument('--metadata_path', type = str, default = metadata_path, help = 'Path of .csv metadata file')  
     parser.add_argument('--downscaling', type = int, default = downscaling, help = 'Subsampling factor')
-    parser.add_argument('--rows', type = int, default = rows, help = 'Number of rows in input image')
-    parser.add_argument('--cols', type = int, default = cols, help = 'Number of columns in input image')
-    parser.add_argument('--slices', type = int, default = slices, help = 'Number of slices in input image')
+    # parser.add_argument('--rows', type = int, default = rows, help = 'Number of rows in input image')
+    # parser.add_argument('--cols', type = int, default = cols, help = 'Number of columns in input image')
+    # parser.add_argument('--slices', type = int, default = slices, help = 'Number of slices in input image')
     parser.add_argument('--channels', type = int, default = channels, help = 'N° of channel of the input volume passed to the network')
-    parser.add_argument('--img_shape', type = tuple, default = (slices, rows, cols), help = 'Shape of the input volume passed to the network')
+    # parser.add_argument('--img_shape', type = tuple, default = (slices, rows, cols), help = 'Shape of the input volume passed to the network')
     parser.add_argument('--dic_classes', type = dict, default = dic_classes, help = 'Dictionary "labels": class_id')
     parser.add_argument('--num_classes', type = int, default = num_classes, help = 'Subsampling factor')
     parser.add_argument('--out_shape', type = int, default = out_shape, help = 'Subsampling factor')
