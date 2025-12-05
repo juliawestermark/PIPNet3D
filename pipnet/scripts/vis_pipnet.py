@@ -288,6 +288,11 @@ def visualize_topk(
             
             xs, ys = xs.to(device), ys.to(device)
             
+            # Use the model to classify this batch of input data
+            with torch.no_grad():
+                softmaxes, pooled, out = net(xs, inference = True) # softmaxes: (1,ps,d,h,w)                 
+                outmax = torch.amax(out, dim=1)[0]  # outmax: ([1]) as projectloader's bs=1 
+            
             # visualize only relevant prototypes (weights connection > 0 at least for one class)
             for p in topks.keys():
                 
@@ -297,13 +302,8 @@ def visualize_topk(
                     for idx, score in topks[p]:
                         
                         if idx == i:
-                            # Use the model to classify this batch of input data
-                            with torch.no_grad():
-
-                                softmaxes, pooled, out = net(xs, inference = True) # softmaxes: (1,ps,d,h,w)                 
-                                outmax = torch.amax(out, dim=1)[0]  # outmax: ([1]) as projectloader's bs=1 
-                                if outmax.item() == 0.:
-                                    abstained += 1
+                            if outmax.item() == 0.:
+                                abstained += 1
                             
                             # Take the maximum per prototype in feature's space for image xs
                             max_per_prototype, max_idx_per_prototype = torch.max(softmaxes, dim=0) # (ps,d,h,w)
