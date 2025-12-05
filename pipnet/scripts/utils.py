@@ -37,10 +37,10 @@ def get_args(
     # dataset_path = "/home/lisadesanti/DeepLearning/ADNI/ADNI_DATASET/ADNI_MRI_preprocessed"
     # metadata_path = "/home/lisadesanti/DeepLearning/ADNI/ADNI_DATASET/ADNI1_Screening_1.5T_8_21_2023.csv"
 
-    root_folder = "/home/maia-user/PIPNet3D/"
-    # root_folder = "/proj/berzbiomedicalimagingkth/users/x_julwe/PIPNet3D/"
-    dataset_path = "/home/maia-user/ADNI_npy"
-    # dataset_path = "/proj/berzbiomedicalimagingkth/users/x_julwe/ADNI_npy"
+    #root_folder = "/home/maia-user/PIPNet3D/"
+    root_folder = "/proj/berzbiomedicalimagingkth/users/x_julwe/PIPNet3D/"
+    #dataset_path = "/home/maia-user/ADNI_npy"
+    dataset_path = "/proj/berzbiomedicalimagingkth/users/x_julwe/ADNI_npy"
     metadata_path = root_folder
     model_path = os.path.join(root_folder, "pipnet", "models")
     
@@ -59,10 +59,10 @@ def get_args(
     out_shape = num_classes
     experiment_folder = os.path.join(root_folder, "results", task_performed, net, "fold_" + str(current_fold))
     
-    batch_size_pretrain = 2 #12
-    batch_size = 2 #12
-    epochs_pretrain = 1 #10
-    epochs = 2 #60
+    batch_size_pretrain = 16 #12
+    batch_size = 16 #12
+    epochs_pretrain = 0 #10
+    epochs = 0 #60
     optimizer = "Adam"
     lr = 0.05
     lr_age = 0.1
@@ -70,10 +70,10 @@ def get_args(
     lr_net = 0.0001 #0.0005
     weight_decay = 0.1 #0.0
     num_features = 0
-    freeze_epochs = 10
+    freeze_epochs = 0
     gamma = 0.1             # LR's decay factor
     step_size = 7           # LR's frequency decay
-    num_workers = 2
+    num_workers = 8
         
     parser = argparse.ArgumentParser('Train a PIP-Net')
     parser.add_argument('--task_performed', type = str, default = task_performed, help = 'String which differentiates between Black-box vs PIPNet training')     
