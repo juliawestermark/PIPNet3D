@@ -23,6 +23,54 @@ import random
 from tqdm.auto import tqdm
 
 
+# Image cache to avoid redundant loading and preprocessing
+_image_cache = {}
+
+def load_and_preprocess_image(img_path, args, use_cache=True):
+    """Load and preprocess image with caching to avoid redundant operations"""
+    if use_cache and img_path in _image_cache:
+        return _image_cache[img_path]
+
+    img_np = np.expand_dims(np.load(img_path), axis=0)
+    img_min = img_np.min()
+    img_max = img_np.max()
+    img_np = (img_np - img_min) / (img_max - img_min)
+
+    img_tensor = transforms.RepeatChannel(repeats=args.channels)(img_np)
+    img_tensor = transforms.Resize(spatial_size=(args.slices, args.rows, args.cols))(img_tensor)
+    img_tensor = img_tensor.unsqueeze_(0)  # shape: (1, 3, slices, rows, cols)
+
+    if use_cache:
+        _image_cache[img_path] = img_tensor
+
+    return img_tensor
+
+
+def create_edge_mask(img_tensor, d_min, d_max, h_min, h_max, w_min, w_max):
+    """Optimized edge mask creation for volume of interest highlighting"""
+    # Create base mask
+    edges_mask = torch.zeros_like(img_tensor)
+    erosion_mask = torch.zeros_like(img_tensor)
+
+    # Set the outer box on first channel
+    edges_mask[:, 0, d_min:d_max+1, h_min:h_max+1, w_min:w_max+1] = 1
+    erosion_mask[:, 0, d_min+1:d_max, h_min+2:h_max-2, w_min+2:w_max-1] = 1
+    edges_mask = edges_mask - erosion_mask
+    edges_mask = (edges_mask > 0).to(dtype=torch.bool)
+
+    return edges_mask
+
+
+def clear_image_cache():
+    """Clear the image cache to free memory"""
+    global _image_cache
+    _image_cache.clear()
+
+
+# Pre-compile regex patterns for better performance
+_pattern_subj = re.compile(r"/(\d+)_S_(\d+)/")
+_pattern_exam = re.compile(r"[0-9a-fA-F-]{36}(?=\.npy$)")
+
 
 def get_patch_size(args):
     
@@ -106,7 +154,10 @@ def visualize_topk(
                      top-k most similar image patches in the training set
         
     """
-    
+
+    # Clear cache at the start to free memory
+    clear_image_cache()
+
     print("Visualizing prototypes for topk...", flush = True)
     dir = os.path.join(args.log_dir, foldername)
     if save or plot:
@@ -271,20 +322,12 @@ def visualize_topk(
                                 w_idx = max_idx_per_prototype_w[p].item()
                                 img_to_open = imgs[i]
                                 
-                                if isinstance(img_to_open, tuple) or isinstance(img_to_open, list): 
+                                if isinstance(img_to_open, tuple) or isinstance(img_to_open, list):
                                     # dataset contains tuples of (img, label)
                                     img_to_open = img_to_open[0]
-                                
-                                img_np = np.expand_dims(np.load(img_to_open), axis=0)
-                                img_min = img_np.min()
-                                img_max = img_np.max()
-                                img_np = (img_np-img_min)/(img_max-img_min)
-                                
-                                img_tensor = transforms.RepeatChannel(repeats = args.channels)(img_np)
-                                img_tensor = transforms.Resize(spatial_size = (args.slices, args.rows, args.cols))(img_tensor)
-                                
-                                # img_tensor: shape (1, 3, slices, rows, cols)
-                                img_tensor = img_tensor.unsqueeze_(0) 
+
+                                # Use cached image loading and preprocessing
+                                img_tensor = load_and_preprocess_image(img_to_open, args, use_cache=True) 
                                 
                                 ps_coord = get_img_coordinates(args.slices, args.rows, args.cols, softmaxes.shape, patchsize, skip_z, skip_y, skip_x, d_idx, h_idx, w_idx)
                                 
@@ -316,15 +359,9 @@ def visualize_topk(
             text = "f_" + str(args.current_fold) + "_p_" + str(p)
             
             for img_name, tensor, ps_coord in zip(img_prototype[p], tensors_per_prototype[p], proto_coord[p]):
-                 
-                img_np = np.expand_dims(np.load(img_name), axis=0)
-                img_min = img_np.min()
-                img_max = img_np.max()
-                img_np = (img_np-img_min)/(img_max-img_min)
-                
-                img_tensor = transforms.RepeatChannel(repeats = args.channels)(img_np)
-                img_tensor = transforms.Resize(spatial_size = (args.slices, args.rows, args.cols))(img_tensor)
-                img_tensor = img_tensor.unsqueeze_(0) # shape: (1, 3, slices, rows, cols)
+
+                # Use cached image loading and preprocessing
+                img_tensor = load_and_preprocess_image(img_name, args, use_cache=True)
                 
                 d_min = ps_coord[0]
                 d_max = ps_coord[1]
@@ -332,25 +369,16 @@ def visualize_topk(
                 h_max = ps_coord[3]
                 w_min = ps_coord[4]
                 w_max = ps_coord[5]
-                
-                # Create a binary mask for the cube's edges
-                edges_mask = torch.zeros_like(img_tensor)
-                erosion_mask = torch.zeros_like(img_tensor)
-                
-                edges_mask[:, 0, d_min:d_max+1, h_min:h_max+1, w_min:w_max+1] = 1
-                erosion_mask[:, 0, d_min+1:d_max, h_min+2:h_max-2, w_min+2:w_max-1] = 1
-                edges_mask = edges_mask - erosion_mask
-                edges_mask = (edges_mask > 0).to(dtype=torch.bool)
-                
+
+                # Create optimized edge mask and apply
+                edges_mask = create_edge_mask(img_tensor, d_min, d_max, h_min, h_max, w_min, w_max)
                 img_tensor[edges_mask] = 1.
                 image = img_tensor.detach().cpu().numpy() # shape: (1, 3, slices, rows, cols)
-                
-                pattern_subj = r"/(\d+)_S_(\d+)/"
-                img_name_subj = re.search(pattern_subj, img_name)
+
+                # Use pre-compiled regex patterns
+                img_name_subj = _pattern_subj.search(img_name)
                 subj = img_name[img_name_subj.span()[0]+1: img_name_subj.span()[1]-1]
-                # pattern_exam = r"/I(\d+).npy"
-                pattern_exam = r"[0-9a-fA-F-]{36}(?=\.npy$)"
-                img_name_exam = re.search(pattern_exam, img_name)
+                img_name_exam = _pattern_exam.search(img_name)
                 exam = img_name[img_name_exam.span()[0]+1: img_name_exam.span()[1]]
                     
                 ps_name = text + "_" + subj + "_" + exam

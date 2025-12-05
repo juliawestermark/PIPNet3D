@@ -227,10 +227,10 @@ if args.state_dict_dir_net == '':
     torch.save({'model_state_dict': net.state_dict(), 'optimizer_net_state_dict': optimizer_net.state_dict()}, os.path.join(os.path.join(args.log_dir, 'checkpoints'), 'net_pretrained'))
     net.train()
     
-with torch.no_grad():
-    if args.epochs_pretrain > 0:
-        print("Visualize top-k")
-        topks, img_prototype, proto_coord = visualize_topk(net, projectloader, len(args.dic_classes), device, 'visualised_pretrained_prototypes_topk', args, save=False)
+# with torch.no_grad():
+#     if args.epochs_pretrain > 0:
+#         print("Visualize top-k")
+#         topks, img_prototype, proto_coord = visualize_topk(net, projectloader, len(args.dic_classes), device, 'visualised_pretrained_prototypes_topk', args, save=False)
  
     
 #%% PHASE (2): Training PIPNet
