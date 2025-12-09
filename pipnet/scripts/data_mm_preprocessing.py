@@ -107,10 +107,10 @@ if __name__ == "__main__":
     print("Start time:", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     
     # Paths
-    ADNI_PATH = "/home/maia-user/ADNI_complete"
-    # ADNI_PATH = "/proj/berzbiomedicalimagingkth/users/x_julwe/ADNI/ADNI_complete"
-    OUTPUT_ROOT = "/home/maia-user/ADNI_npy"
-    # OUTPUT_ROOT = "/proj/berzbiomedicalimagingkth/users/x_julwe/ADNI_npy"
+    #ADNI_PATH = "/home/maia-user/ADNI_complete"
+    ADNI_PATH = "/proj/berzbiomedicalimagingkth/users/x_julwe/ADNI/ADNI_complete"
+    #OUTPUT_ROOT = "/home/maia-user/ADNI_npy"
+    OUTPUT_ROOT = "/proj/berzbiomedicalimagingkth/users/x_julwe/ADNI_npy"
 
     COLLECTION_PATH = os.path.join(ADNI_PATH, "OutputCollection.csv")
     DEMOGRAPHICS_PATH = os.path.join(ADNI_PATH, "participant_demographics.csv")
@@ -125,7 +125,7 @@ if __name__ == "__main__":
     print(f"Total MRI files to process: {len(df)}")
     # Convert all MRI files
     # processed, converted, skipped, failed = convert_all_mri(df, OUTPUT_ROOT)
-    processed, converted, skipped, failed = convert_all_mri(df.iloc[0:10], OUTPUT_ROOT)
+    processed, converted, skipped, failed = convert_all_mri(df.iloc[0:10000], OUTPUT_ROOT)
 
     # Done
     print("All done!")

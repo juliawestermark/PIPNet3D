@@ -61,8 +61,8 @@ def get_args(
     
     batch_size_pretrain = 16 #12
     batch_size = 16 #12
-    epochs_pretrain = 0 #10
-    epochs = 0 #60
+    epochs_pretrain = 10 #10
+    epochs = 60 #60
     optimizer = "Adam"
     lr = 0.05
     lr_age = 0.1
@@ -70,7 +70,7 @@ def get_args(
     lr_net = 0.0001 #0.0005
     weight_decay = 0.1 #0.0
     num_features = 0
-    freeze_epochs = 0
+    freeze_epochs = 10
     gamma = 0.1             # LR's decay factor
     step_size = 7           # LR's frequency decay
     num_workers = 8
