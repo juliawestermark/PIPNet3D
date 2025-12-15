@@ -188,7 +188,7 @@ def get_mri_brains_paths(
 
 class AugSupervisedDataset(torch.utils.data.Dataset):
 
-    def __init__(self, X_paths, y, dic_classes, transform=None):
+    def __init__(self, X_paths, y, dic_classes, transform=None, mask=None):
         self.X_paths = X_paths
         self.y = y
         self.transform = transform
@@ -196,6 +196,7 @@ class AugSupervisedDataset(torch.utils.data.Dataset):
         self.img_labels = y
         self.classes = list(dic_classes.keys())
         self.class_to_idx = dic_classes
+        self.mask = mask
 
     def __len__(self):
         return len(self.X_paths)
@@ -204,28 +205,49 @@ class AugSupervisedDataset(torch.utils.data.Dataset):
         path = self.X_paths[idx]
         label = int(self.y[idx])
 
-        # 1. Load .npy
-        volume = np.load(path).astype(np.float32)  # shape: (D, H, W)
+        # 1. Ladda data (D, H, W)
+        img_arr = np.load(path).astype(np.float32)
+        
+        # 2. Hantera Mask
+        if self.mask is not None:
+            mask_arr = self.mask.copy() # (D, H, W)
+        else:
+            mask_arr = np.ones_like(img_arr)
 
-        # 2. To tensor
-        volume = torch.from_numpy(volume).unsqueeze(0)  # shape: (1, D, H, W)
+        # 3. Slå ihop dem till (2, D, H, W)
+        # Kanal 0 = Bild, Kanal 1 = Mask
+        combined = np.stack([img_arr, mask_arr], axis=0)
+        combined_tensor = torch.from_numpy(combined) 
 
-        # 3. Apply transforms (MONAI Compose)
+        # 4. Applicera Transform (På båda kanalerna samtidigt!)
         if self.transform:
-            volume = self.transform(volume)
+            combined_tensor = self.transform(combined_tensor)
+        
+        # 5. Normalisering (OBS: Bara på bild-kanalen, inte masken!)
+        img_part = combined_tensor[0, ...]
+        mask_part = combined_tensor[1, ...] # Efter transform är masken roterad!
 
-            # normalisera efter transform (som Lisa gör)
-            mi = volume.min()
-            ma = volume.max()
-            if ma > mi:
-                volume = (volume - mi) / (ma - mi)
+        mi = img_part.min()
+        ma = img_part.max()
+        if ma > mi:
+            img_part = (img_part - mi) / (ma - mi)
+        
+        # Tröskla masken igen ifall interpolation gjorde den "suddig" i kanten
+        mask_part = (mask_part > 0.5).float()
+        
+        # Applicera masken på input-bilden för säkerhets skull
+        img_part = img_part * mask_part
 
-        return volume, label
+        # 6. Returnera som (2, D, H, W) igen
+        # Vi skickar masken "gömd" i datan till träningsloopen
+        final_tensor = torch.stack([img_part, mask_part], dim=0)
+        
+        return final_tensor, label
 
 
 class TwoAugSelfSupervisedDataset(torch.utils.data.Dataset):
 
-    def __init__(self, X_paths, y, dic_classes, transform=None):
+    def __init__(self, X_paths, y, dic_classes, transform=None, mask=None):
         self.X_paths = X_paths
         self.y = y
         self.transform1 = transform
@@ -234,6 +256,7 @@ class TwoAugSelfSupervisedDataset(torch.utils.data.Dataset):
         self.img_labels = y
         self.classes = list(dic_classes.keys())
         self.class_to_idx = dic_classes
+        self.mask = mask
 
     def __len__(self):
         return len(self.X_paths)
@@ -241,34 +264,45 @@ class TwoAugSelfSupervisedDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         path = self.X_paths[idx]
         label = int(self.y[idx])
+        
+        img_arr = np.load(path).astype(np.float32)
+        if self.mask is not None:
+            mask_arr = self.mask.copy()
+        else:
+            mask_arr = np.ones_like(img_arr)
+            
+        combined = np.stack([img_arr, mask_arr], axis=0)
+        combined_tensor = torch.from_numpy(combined) # (2, D, H, W)
 
-        # 1. Load .npy
-        volume = np.load(path).astype(np.float32)
-
-        # 2. To tensor
-        volume = torch.from_numpy(volume).unsqueeze(0)  # shape (1, D, H, W)
-
-        # 3. Augmentation 1
+        # Transform 1
         if self.transform1:
-            vol1 = self.transform1(volume)
-            mi = vol1.min()
-            ma = vol1.max()
-            if ma > mi:
-                vol1 = (vol1 - mi) / (ma - mi)
+            res1 = self.transform1(combined_tensor.clone())
+            img1 = res1[0, ...]
+            msk1 = (res1[1, ...] > 0.5).float()
+            
+            # Normalisera
+            mi, ma = img1.min(), img1.max()
+            if ma > mi: img1 = (img1 - mi)/(ma - mi)
+            img1 = img1 * msk1
+            out1 = torch.stack([img1, msk1], dim=0)
         else:
-            vol1 = volume.clone()
+            # Hantera fall utan transform om nödvändigt...
+            out1 = combined_tensor.clone()
 
-        # 4. Augmentation 2
+        # Transform 2 (Gör samma sak...)
         if self.transform2:
-            vol2 = self.transform2(volume)
-            mi = vol2.min()
-            ma = vol2.max()
-            if ma > mi:
-                vol2 = (vol2 - mi) / (ma - mi)
+            res2 = self.transform2(combined_tensor.clone())
+            img2 = res2[0, ...]
+            msk2 = (res2[1, ...] > 0.5).float()
+            
+            mi, ma = img2.min(), img2.max()
+            if ma > mi: img2 = (img2 - mi)/(ma - mi)
+            img2 = img2 * msk2
+            out2 = torch.stack([img2, msk2], dim=0)
         else:
-            vol2 = volume.clone()
+            out2 = combined_tensor.clone()
 
-        return vol1, vol2, label
+        return out1, out2, label
 
 
 def create_datasets(
@@ -280,6 +314,7 @@ def create_datasets(
         current_fold = 1,
         test_split = 0.2,
         seed = 42,
+        mask = None
     ):
     """
     Skapar alla dataset:
@@ -333,56 +368,64 @@ def create_datasets(
         X_paths=X_train,
         y=y_train,
         dic_classes=dic_classes,
-        transform=transforms_dic["train"]
+        transform=transforms_dic["train"],
+        mask=mask
     )
 
     trainset_pretraining = TwoAugSelfSupervisedDataset(
         X_paths=X_train,
         y=y_train,
         dic_classes=dic_classes,
-        transform=transforms_dic["train"]
+        transform=transforms_dic["train"],
+        mask=mask
     )
 
     trainset_normal = AugSupervisedDataset(
         X_paths=X_train,
         y=y_train,
         dic_classes=dic_classes,
-        transform=transforms_dic["train_noaug"]
+        transform=transforms_dic["train_noaug"],
+        mask=mask
     )
 
     trainset_normal_augment = AugSupervisedDataset(
         X_paths=X_train,
         y=y_train,
         dic_classes=dic_classes,
-        transform=transforms_dic["train"]
+        transform=transforms_dic["train"],
+        mask=mask
     )
 
     projectset = AugSupervisedDataset(
         X_paths=X_train,
         y=y_train,
         dic_classes=dic_classes,
-        transform=transforms_dic["project_noaug"]
+        transform=transforms_dic["project_noaug"],
+        mask=mask
     )
 
     valset = AugSupervisedDataset(
         X_paths=X_val,
         y=y_val,
         dic_classes=dic_classes,
-        transform=transforms_dic["val"]
+        transform=transforms_dic["val"],
+        mask=mask
     )
 
     testset = AugSupervisedDataset(
         X_paths=X_test,
         y=y_test,
         dic_classes=dic_classes,
-        transform=transforms_dic["test"]
+        transform=transforms_dic["test"],
+        mask=mask
     )
 
     testset_projection = AugSupervisedDataset(
         X_paths=X_test,
         y=y_test,
         dic_classes=dic_classes,
-        transform=transforms_dic["test_projection"]
+        transform=transforms_dic["test_projection"],
+        mask=mask
     )
 
     return (
@@ -406,7 +449,8 @@ def get_brains(
         n_fold = 5,
         current_fold = 1,
         test_split = 0.2,
-        seed = 42):
+        seed = 42,
+        mask = None):
     
     # Data augmentation (on-the-fly) parameters
     aug_prob = 0.5
@@ -459,12 +503,30 @@ def get_brains(
         current_fold = current_fold,
         test_split = test_split,
         seed = seed,
+        mask = mask
     )
 
 
 def get_data(args: argparse.Namespace): 
 
     """ Load dataset based on the parsed arguments """
+
+    # --- 1. Ladda masken ---
+    mask_path = args.global_mask_path
+    mask = None
+    
+    if os.path.exists(mask_path):
+        print(f"[INFO] Loading global mask from {mask_path}")
+        mask = np.load(mask_path).astype(np.float32)
+        
+        # Säkerhetskontroll: Masken måste vara 1 där vi vill behålla data, 0 annars.
+        # Om den är bool (True/False), konvertera.
+        if mask.dtype == bool:
+            mask = mask.astype(np.float32)
+    else:
+        print(f"[WARNING] No global mask found at {mask_path}. Training without mask.")
+
+    # -----------------------
 
     sample_df = setup_npy_mri_dataframe(
         classes=args.dic_classes.keys(),
@@ -484,6 +546,16 @@ def get_data(args: argparse.Namespace):
 
     print(f"[INFO] Image shape detected from data: {sample_img.shape}")
     print(f"[INFO] Using downscaled shape: {args.img_shape}")
+
+    # Check dimensions
+    sample_path = sample_df["file_path"].iloc[0]
+    sample_img = np.load(sample_path)
+    if mask is not None:
+        if mask.shape != sample_img.shape:
+            print(f"[ERROR] Mask shape {mask.shape} does not match image shape {sample_img.shape}")
+            # Här kan du välja att crasha eller försöka resizea masken.
+            # För säkerhets skull rekommenderar jag att du genererar masken på rätt data.
+            raise ValueError("Mask dimensions mismatch!")
     
     torch.manual_seed(args.seed)
     random.seed(args.seed)
@@ -498,7 +570,8 @@ def get_data(args: argparse.Namespace):
         n_fold = args.n_fold,
         current_fold = args.current_fold,
         test_split = args.test_split,
-        seed = args.seed
+        seed = args.seed,
+        mask = mask
         )
 
     raise Exception(f'Could not load data set, data set "{args.dataset_path}" not found!')

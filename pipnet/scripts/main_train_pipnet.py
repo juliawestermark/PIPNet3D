@@ -395,31 +395,4 @@ for c in range(net.module._classification.weight.shape[0]):
             relevant_ps.append((p, proto_weights[p].item()))
     if args.test_split == 0.:
         print("Class", c, "(", list(testloader.dataset.class_to_idx.keys())[list(testloader.dataset.class_to_idx.values()).index(c)], "):", "has", len(relevant_ps), "relevant prototypes: ", relevant_ps, flush=True)
-        
-    
-
-
-    
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 

@@ -43,6 +43,7 @@ def get_args(
     dataset_path = "/proj/berzbiomedicalimagingkth/users/x_julwe/ADNI_npy"
     metadata_path = root_folder
     model_path = os.path.join(root_folder, "pipnet", "models")
+    global_mask_path = os.path.join(dataset_path, "global_mask.npy")
     
     n_fold = 2           # Number of fold
     test_split = 0.2
@@ -121,6 +122,7 @@ def get_args(
     parser.add_argument('--bias', default = False, action = 'store_true', help = 'Flag that indicates whether to include a trainable bias in the linear classification layer.')
     parser.add_argument('--extra_test_image_folder', type = str, default = './experiments', help = 'Folder with images that PIP-Net will predict and explain, that are not in the training or test set. E.g. images with 2 objects or OOD image. Images should be in subfolder. E.g. images in ./experiments/images/, and argument --./experiments')
     parser.add_argument('--model_path', type = str, default = model_path, help = 'The models folder')
+    parser.add_argument('--global_mask_path', type = str, default = global_mask_path, help = 'The global mask path')
 
     args = parser.parse_args()
     

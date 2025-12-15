@@ -361,7 +361,7 @@ def visualize_topk(
             for img_name, tensor, ps_coord in zip(img_prototype[p], tensors_per_prototype[p], proto_coord[p]):
 
                 # Use cached image loading and preprocessing
-                img_tensor = load_and_preprocess_image(img_name, args, use_cache=True)
+                img_tensor = load_and_preprocess_image(img_name, args, use_cache=False)
                 
                 d_min = ps_coord[0]
                 d_max = ps_coord[1]
