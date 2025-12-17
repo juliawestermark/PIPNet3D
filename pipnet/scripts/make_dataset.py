@@ -188,7 +188,7 @@ def get_mri_brains_paths(
 
 class AugSupervisedDataset(torch.utils.data.Dataset):
 
-    def __init__(self, X_paths, y, dic_classes, transform=None, mask=None):
+    def __init__(self, X_paths, y, dic_classes, transform=None):
         self.X_paths = X_paths
         self.y = y
         self.transform = transform
@@ -196,7 +196,7 @@ class AugSupervisedDataset(torch.utils.data.Dataset):
         self.img_labels = y
         self.classes = list(dic_classes.keys())
         self.class_to_idx = dic_classes
-        self.mask = mask
+        # self.mask = mask
 
     def __len__(self):
         return len(self.X_paths)
@@ -208,11 +208,11 @@ class AugSupervisedDataset(torch.utils.data.Dataset):
         # 1. Load .npy
         volume = np.load(path).astype(np.float32)  # shape: (D, H, W)
         
-        # --- NYTT: Applicera mask innan transforms ---
-        if self.mask is not None:
-            # Masken antas ha samma dimensioner som volume (raw data)
-            volume = volume * self.mask
-        # ---------------------------------------------
+        # # --- NYTT: Applicera mask innan transforms ---
+        # if self.mask is not None:
+        #     # Masken antas ha samma dimensioner som volume (raw data)
+        #     volume = volume * self.mask
+        # # ---------------------------------------------
 
         # 2. To tensor
         volume = torch.from_numpy(volume).unsqueeze(0)  # shape: (1, D, H, W)
@@ -232,7 +232,7 @@ class AugSupervisedDataset(torch.utils.data.Dataset):
 
 class TwoAugSelfSupervisedDataset(torch.utils.data.Dataset):
 
-    def __init__(self, X_paths, y, dic_classes, transform=None, mask=None):
+    def __init__(self, X_paths, y, dic_classes, transform=None):
         self.X_paths = X_paths
         self.y = y
         self.transform1 = transform
@@ -241,7 +241,7 @@ class TwoAugSelfSupervisedDataset(torch.utils.data.Dataset):
         self.img_labels = y
         self.classes = list(dic_classes.keys())
         self.class_to_idx = dic_classes
-        self.mask = mask
+        # self.mask = mask
 
     def __len__(self):
         return len(self.X_paths)
@@ -253,10 +253,10 @@ class TwoAugSelfSupervisedDataset(torch.utils.data.Dataset):
         # 1. Load .npy
         volume = np.load(path).astype(np.float32)
 
-        # --- NYTT: Applicera mask ---
-        if self.mask is not None:
-            volume = volume * self.mask
-        # ----------------------------
+        # # --- NYTT: Applicera mask ---
+        # if self.mask is not None:
+        #     volume = volume * self.mask
+        # # ----------------------------
 
         # 2. To tensor
         volume = torch.from_numpy(volume).unsqueeze(0)  # shape (1, D, H, W)
@@ -292,8 +292,7 @@ def create_datasets(
         n_fold = 5,
         current_fold = 1,
         test_split = 0.2,
-        seed = 42,
-        mask = None
+        seed = 42
     ):
     """
     Skapar alla dataset:
@@ -347,64 +346,56 @@ def create_datasets(
         X_paths=X_train,
         y=y_train,
         dic_classes=dic_classes,
-        transform=transforms_dic["train"],
-        mask=mask
+        transform=transforms_dic["train"]
     )
 
     trainset_pretraining = TwoAugSelfSupervisedDataset(
         X_paths=X_train,
         y=y_train,
         dic_classes=dic_classes,
-        transform=transforms_dic["train"],
-        mask=mask
+        transform=transforms_dic["train"]
     )
 
     trainset_normal = AugSupervisedDataset(
         X_paths=X_train,
         y=y_train,
         dic_classes=dic_classes,
-        transform=transforms_dic["train_noaug"],
-        mask=mask
+        transform=transforms_dic["train_noaug"]
     )
 
     trainset_normal_augment = AugSupervisedDataset(
         X_paths=X_train,
         y=y_train,
         dic_classes=dic_classes,
-        transform=transforms_dic["train"],
-        mask=mask
+        transform=transforms_dic["train"]
     )
 
     projectset = AugSupervisedDataset(
         X_paths=X_train,
         y=y_train,
         dic_classes=dic_classes,
-        transform=transforms_dic["project_noaug"],
-        mask=mask
+        transform=transforms_dic["project_noaug"]
     )
 
     valset = AugSupervisedDataset(
         X_paths=X_val,
         y=y_val,
         dic_classes=dic_classes,
-        transform=transforms_dic["val"],
-        mask=mask
+        transform=transforms_dic["val"]
     )
 
     testset = AugSupervisedDataset(
         X_paths=X_test,
         y=y_test,
         dic_classes=dic_classes,
-        transform=transforms_dic["test"],
-        mask=mask
+        transform=transforms_dic["test"]
     )
 
     testset_projection = AugSupervisedDataset(
         X_paths=X_test,
         y=y_test,
         dic_classes=dic_classes,
-        transform=transforms_dic["test_projection"],
-        mask=mask
+        transform=transforms_dic["test_projection"]
     )
 
     return (
@@ -443,10 +434,10 @@ def get_brains(
     transforms_dic = {
         'train': Compose([
             Resize(spatial_size=img_shape),
-            RandRotate(range_x=rand_rot_rad, range_y=rand_rot_rad, range_z=rand_rot_rad, prob=aug_prob),
+            # RandRotate(range_x=rand_rot_rad, range_y=rand_rot_rad, range_z=rand_rot_rad, prob=aug_prob),
             RandGaussianNoise(std=rand_noise_std, prob=aug_prob),
-            Affine(translate_params=(rand_shift, rand_shift, rand_shift), image_only=True),
-            RandZoom(min_zoom=min_zoom, max_zoom=max_zoom, prob=aug_prob),
+            # Affine(translate_params=(rand_shift, rand_shift, rand_shift), image_only=True),
+            # RandZoom(min_zoom=min_zoom, max_zoom=max_zoom, prob=aug_prob),
             RepeatChannel(repeats=channels),
         ]),
         'train_noaug': Compose([
@@ -481,8 +472,7 @@ def get_brains(
         n_fold = n_fold,
         current_fold = current_fold,
         test_split = test_split,
-        seed = seed,
-        mask = mask
+        seed = seed
     )
 
 
@@ -490,20 +480,20 @@ def get_data(args: argparse.Namespace):
 
     """ Load dataset based on the parsed arguments """
 
-    # --- 1. Ladda masken ---
-    mask_path = args.global_mask_path
-    mask = None
+    # # --- 1. Ladda masken ---
+    # mask_path = args.global_mask_path
+    # mask = None
     
-    if os.path.exists(mask_path):
-        print(f"[INFO] Loading global mask from {mask_path}")
-        mask = np.load(mask_path).astype(np.float32)
+    # if os.path.exists(mask_path):
+    #     print(f"[INFO] Loading global mask from {mask_path}")
+    #     mask = np.load(mask_path).astype(np.float32)
         
-        # Säkerhetskontroll: Masken måste vara 1 där vi vill behålla data, 0 annars.
-        # Om den är bool (True/False), konvertera.
-        if mask.dtype == bool:
-            mask = mask.astype(np.float32)
-    else:
-        print(f"[WARNING] No global mask found at {mask_path}. Training without mask.")
+    #     # Säkerhetskontroll: Masken måste vara 1 där vi vill behålla data, 0 annars.
+    #     # Om den är bool (True/False), konvertera.
+    #     if mask.dtype == bool:
+    #         mask = mask.astype(np.float32)
+    # else:
+    #     print(f"[WARNING] No global mask found at {mask_path}. Training without mask.")
 
     # -----------------------
 
@@ -526,15 +516,15 @@ def get_data(args: argparse.Namespace):
     print(f"[INFO] Image shape detected from data: {sample_img.shape}")
     print(f"[INFO] Using downscaled shape: {args.img_shape}")
 
-    # Check dimensions
-    sample_path = sample_df["file_path"].iloc[0]
-    sample_img = np.load(sample_path)
-    if mask is not None:
-        if mask.shape != sample_img.shape:
-            print(f"[ERROR] Mask shape {mask.shape} does not match image shape {sample_img.shape}")
-            # Här kan du välja att crasha eller försöka resizea masken.
-            # För säkerhets skull rekommenderar jag att du genererar masken på rätt data.
-            raise ValueError("Mask dimensions mismatch!")
+    # # Check dimensions
+    # sample_path = sample_df["file_path"].iloc[0]
+    # sample_img = np.load(sample_path)
+    # if mask is not None:
+    #     if mask.shape != sample_img.shape:
+    #         print(f"[ERROR] Mask shape {mask.shape} does not match image shape {sample_img.shape}")
+    #         # Här kan du välja att crasha eller försöka resizea masken.
+    #         # För säkerhets skull rekommenderar jag att du genererar masken på rätt data.
+    #         raise ValueError("Mask dimensions mismatch!")
     
     torch.manual_seed(args.seed)
     random.seed(args.seed)
@@ -549,8 +539,7 @@ def get_data(args: argparse.Namespace):
         n_fold = args.n_fold,
         current_fold = args.current_fold,
         test_split = args.test_split,
-        seed = args.seed,
-        mask = mask
+        seed = args.seed
         )
 
     raise Exception(f'Could not load data set, data set "{args.dataset_path}" not found!')

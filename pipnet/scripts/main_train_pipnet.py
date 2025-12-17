@@ -45,7 +45,7 @@ torch.manual_seed(args.seed)
 torch.cuda.manual_seed_all(args.seed)
 random.seed(args.seed)
 np.random.seed(args.seed)
-        
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
@@ -74,6 +74,23 @@ if not os.path.isdir(args.log_dir):
 
 # Set the device
 device, device_ids = set_device(args)
+
+# --- NY KOD: LADDA MASKEN HÄR ---
+mask_path = args.global_mask_path
+global_mask = None
+
+if os.path.exists(mask_path):
+    print(f"Loading global mask from {mask_path}...", flush=True)
+    mask_arr = np.load(mask_path).astype(np.float32)
+    # Gör om till torch tensor och lägg på GPU
+    global_mask = torch.from_numpy(mask_arr).float().to(device)
+    
+    # OBS: Om masken är (D,H,W), lägg till channel dim så den blir (1, D, H, W)
+    # Detta underlättar i train_model.py senare
+    if global_mask.ndim == 3:
+        global_mask = global_mask.unsqueeze(0)
+else:
+    print(f"WARNING: No mask found at {mask_path}", flush=True)
 
 # Create 3D-PIPNet
 network_layers = get_network(args.out_shape, args)
@@ -214,7 +231,8 @@ for epoch in range(1, args.epochs_pretrain+1):
         args.epochs_pretrain, 
         device, 
         pretrain = True, 
-        finetune = False)
+        finetune = False,
+        mask = global_mask)
     
     lrs_pretrain_net += train_info['lrs_net']
     plt.clf()
@@ -326,7 +344,8 @@ for epoch in range(1, args.epochs + 1):
         args.epochs, 
         device, 
         pretrain = False, 
-        finetune = finetune)
+        finetune = finetune,
+        mask = global_mask)
     
     lrs_net += train_info['lrs_net']
     lrs_classifier += train_info['lrs_class']

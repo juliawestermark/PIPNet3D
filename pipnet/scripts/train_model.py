@@ -21,7 +21,8 @@ def train_pipnet(
         device, 
         pretrain = False, 
         finetune = False, 
-        progress_prefix: str = 'Train Epoch'):
+        progress_prefix: str = 'Train Epoch',
+        mask = None):
 
     # Make sure the model is in train mode
     net.train()
@@ -68,6 +69,8 @@ def train_pipnet(
     
     lrs_net = []
     lrs_class = []
+
+    mask_downsampled = None
     
     # Iterate through the data set to update leaves, prototypes and network
     for i, (xs1, xs2, ys) in train_iter:       
@@ -80,6 +83,34 @@ def train_pipnet(
        
         # Perform a forward pass through the network
         proto_features, pooled, out = net(torch.cat([xs1, xs2]))
+
+        # --- ENKEL MASKNING ---
+        if mask is not None:
+            if mask_downsampled is None:
+                # 1. Hämta målstorleken (D, H, W) från features
+                # proto_features shape är typiskt: (Batch, Num_Prototypes, D, H, W)
+                target_size = proto_features.shape[-3:] 
+                
+                # 2. Förbered masken
+                # Vi vill ha formen (1, 1, D_orig, H_orig, W_orig) för interpolate
+                temp_mask = mask # Antag att den redan ligger på GPU
+                
+                # Om masken är (D, H, W) -> gör den (1, 1, D, H, W)
+                if temp_mask.ndim == 3:
+                    temp_mask = temp_mask.unsqueeze(0).unsqueeze(0)
+                # Om masken är (1, D, H, W) -> gör den (1, 1, D, H, W)
+                elif temp_mask.ndim == 4:
+                    temp_mask = temp_mask.unsqueeze(0)
+                
+                # Nu är temp_mask garanterat 5D. 
+                # Då förstår F.interpolate att det är "trilinear" eller "nearest" i 3D.
+                mask_downsampled = F.interpolate(temp_mask, size=target_size, mode='nearest')
+
+                mask_downsampled = (mask_downsampled > 0.5).float()
+            
+            # Applicera masken
+            # proto_features = proto_features * mask_downsampled
+            proto_features = (proto_features * mask_downsampled) + ((1 - mask_downsampled) * -10.0)
         
         loss, acc = calculate_loss(
             proto_features, 
