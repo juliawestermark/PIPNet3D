@@ -56,37 +56,6 @@ def build_preprocessed_paths(df, preprocessed_root, dic_classes):
     return np.array(paths), np.array(labels)
 
 
-def remove_subject_leakage(train_df, test_df):
-    """Flyttar bort subjekt som hamnat i både train och test."""
-    train_subj = set(train_df["individual_id"])
-    test_subj = set(test_df["individual_id"])
-
-    duplicates = train_subj.intersection(test_subj)
-
-    for subj in duplicates:
-        rows = test_df[test_df["individual_id"] == subj]
-        train_df = pd.concat([train_df, rows], ignore_index=True)
-        test_df = test_df.drop(rows.index)
-
-    return train_df.reset_index(drop=True), test_df.reset_index(drop=True)
-
-
-def subject_kfold_split(df, labels, n_fold, current_fold):
-    df = df.reset_index(drop=True)
-    labels = labels.reset_index(drop=True)
-
-    skf = StratifiedKFold(n_splits=n_fold, shuffle=False)
-    generator = skf.split(df, labels)
-
-    for _ in range(current_fold):
-        train_idx, val_idx = next(generator)
-
-    return (
-        df.loc[train_idx].reset_index(drop=True),
-        df.loc[val_idx].reset_index(drop=True)
-    )
-
-
 def shuffle_arrays(X, y, seed=42):
     idx = np.arange(len(y))
     np.random.default_rng(seed).shuffle(idx)
@@ -105,76 +74,84 @@ def get_mri_brains_paths(
         seed=42
     ):
     """
-    ADNI MRI split + k-fold, helt utan nestlade funktioner och utan age.
-    Returnerar:
-        X_paths : np.array
-        y       : np.array
-        info    : dict
+    ADNI MRI split + k-fold på SUBJEKT-NIVÅ.
+    Garanterar att inget subjekt (patient) finns i både train, val och test.
     """
 
-    labels = directory_dataframe["clinical_stage"]
+    # --- 1. Identifiera unika subjekt och deras labels ---
+    # Vi utgår från att en patient har samma label (diagnosis) på alla sina bilder.
+    # Vi droppar dubbletter på ID för att få en lista med unika patienter att splitta.
+    unique_subjects_df = directory_dataframe.drop_duplicates(subset=["individual_id"])
+    
+    unique_subjects = unique_subjects_df["individual_id"].values
+    unique_labels = unique_subjects_df["clinical_stage"].values
 
-    # --- 1. subject-level train/val vs test ---
-    X_train_val_df, X_test_df, y_train_val, y_test = train_test_split(
-        directory_dataframe,
-        labels,
+    # --- 2. Split: Train+Val vs Test (på subjekt) ---
+    # Här delar vi patienterna, inte bilderna.
+    train_val_subj, test_subj, train_val_labels, _ = train_test_split(
+        unique_subjects,
+        unique_labels,
         test_size=test_split,
-        stratify=labels,
+        stratify=unique_labels,  # Håller klassbalansen jämn bland patienterna
         random_state=seed,
         shuffle=True
     )
 
-    # --- 2. ta bort subject leakage ---
-    X_train_val_df, X_test_df = remove_subject_leakage(
-        X_train_val_df, 
-        X_test_df
-    )
-    y_test = X_test_df["clinical_stage"]
+    # --- 3. K-Fold Split: Train vs Val (på subjekt) ---
+    # Vi använder StratifiedKFold på de patienter som tilldelats Train+Val
+    skf = StratifiedKFold(n_splits=n_fold, shuffle=True, random_state=seed)
+    
+    # Generatorn ger index för train och val baserat på 'train_val_subj' listan
+    split_generator = skf.split(train_val_subj, train_val_labels)
+    
+    train_idx, val_idx = None, None
+    # Loopa fram till rätt fold (current_fold är 1-indexerad)
+    for i, (t_idx, v_idx) in enumerate(split_generator):
+        if i == (current_fold - 1):
+            train_idx = t_idx
+            val_idx = v_idx
+            break
+            
+    if train_idx is None:
+        raise ValueError(f"Invalid fold {current_fold} for n_fold={n_fold}")
 
-    # --- 3. k-fold split ---
-    X_train_df, X_val_df = subject_kfold_split(
-        X_train_val_df,
-        X_train_val_df["clinical_stage"],
-        n_fold=n_fold,
-        current_fold=current_fold
-    )
+    # Nu har vi de faktiska patient-ID:na för varje set i denna fold
+    final_train_subj = train_val_subj[train_idx]
+    final_val_subj   = train_val_subj[val_idx]
 
-    # --- 4. bygg paths + labels ---
-    X_train, y_train = build_preprocessed_paths(
-        X_train_df, preprocessed_root, dic_classes
-    )
-    X_val, y_val = build_preprocessed_paths(
-        X_val_df, preprocessed_root, dic_classes
-    )
-    X_test, y_test = build_preprocessed_paths(
-        X_test_df, preprocessed_root, dic_classes
-    )
+    # --- 4. Filtrera original-dataframen för att få alla bilder ---
+    # Nu hämtar vi alla rader (bilder) som tillhör de utvalda patienterna
+    X_train_df = directory_dataframe[directory_dataframe["individual_id"].isin(final_train_subj)].reset_index(drop=True)
+    X_val_df   = directory_dataframe[directory_dataframe["individual_id"].isin(final_val_subj)].reset_index(drop=True)
+    X_test_df  = directory_dataframe[directory_dataframe["individual_id"].isin(test_subj)].reset_index(drop=True)
 
-    # --- 5. shuffle ---
+    # --- 5. Bygg paths + labels (samma logik som förut) ---
+    X_train, y_train = build_preprocessed_paths(X_train_df, preprocessed_root, dic_classes)
+    X_val, y_val     = build_preprocessed_paths(X_val_df, preprocessed_root, dic_classes)
+    X_test, y_test   = build_preprocessed_paths(X_test_df, preprocessed_root, dic_classes)
+
+    # --- 6. Shuffle (blanda ordningen på bilderna inom seten) ---
     if shuffle:
         X_train, y_train = shuffle_arrays(X_train, y_train, seed)
         X_val, y_val     = shuffle_arrays(X_val,   y_val,   seed)
         X_test, y_test   = shuffle_arrays(X_test,  y_test,  seed)
 
-    # --- 6. dataset info ---
+    # --- 7. Dataset info ---
     info = {
-        "train_subjects": X_train_df["individual_id"].unique().tolist(),
-        "val_subjects":   X_val_df["individual_id"].unique().tolist(),
-        "test_subjects":  X_test_df["individual_id"].unique().tolist(),
+        "train_subjects": final_train_subj.tolist(),
+        "val_subjects":   final_val_subj.tolist(),
+        "test_subjects":  test_subj.tolist(),
         "n_train": len(X_train),
         "n_val": len(X_val),
         "n_test": len(X_test),
     }
+    
+    # Debug-utskrift om du vill se fördelningen
+    print(f"Fold {current_fold} stats:")
+    print(f"Train subjects: {len(final_train_subj)}, Images: {len(X_train)}")
+    print(f"Val subjects:   {len(final_val_subj)}, Images: {len(X_val)}")
+    print(f"Test subjects:  {len(test_subj)}, Images: {len(X_test)}")
 
-    # print("Class distribution:")
-    # print("Train set:")
-    # print(X_train_df["clinical_stage"].value_counts())
-    # print("Validation set:")
-    # print(X_val_df["clinical_stage"].value_counts())
-    # print("Test set:")
-    # print(X_test_df["clinical_stage"].value_counts())
-
-    # --- 7. returnera rätt split ---
     if set_type == "train":
         return X_train, y_train, info
     elif set_type == "val":
@@ -182,8 +159,7 @@ def get_mri_brains_paths(
     elif set_type == "test":
         return X_test, y_test, info
 
-    # fallback – returnera allt
-    return build_preprocessed_paths(directory_dataframe, preprocessed_root, dic_classes)
+    return X_train, y_train, info
 
 
 class AugSupervisedDataset(torch.utils.data.Dataset):
