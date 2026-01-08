@@ -31,39 +31,46 @@ def get_args(
     Utility functions for handling parsed arguments """
 
     net_dic = {"resnet3D_18_kin400":3, "convnext3D_tiny":1}
-    dic_classes = {"CN":0, "AD":1} # {"CN":0, "MCI": 1, "AD":2}
-    
-    # root_folder = "/home/lisadesanti/DeepLearning/ADNI/PIPNet3D/pipnet"
-    # dataset_path = "/home/lisadesanti/DeepLearning/ADNI/ADNI_DATASET/ADNI_MRI_preprocessed"
-    # metadata_path = "/home/lisadesanti/DeepLearning/ADNI/ADNI_DATASET/ADNI1_Screening_1.5T_8_21_2023.csv"
+    # dic_classes = {"CN":0, "AD":1} # {"CN":0, "MCI": 1, "AD":2}
+    dic_classes = {"CN":0, "MCI": 1, "AD":2}
+    # modalities = ['mri']
+    modalities = ['mri', 'amy']
 
-    #root_folder = "/home/maia-user/PIPNet3D/"
-    root_folder = "/proj/berzbiomedicalimagingkth/users/x_julwe/PIPNet3D/"
-    #dataset_path = "/home/maia-user/ADNI_npy"
-    dataset_path = "/proj/berzbiomedicalimagingkth/users/x_julwe/ADNI_npy"
+    root_folder = "/home/maia-user/PIPNet3D/"
+    #root_folder = "/proj/berzbiomedicalimagingkth/users/x_julwe/PIPNet3D/"
+    dataset_path = "/home/maia-user/ADNI_npy"
+    #dataset_path = "/proj/berzbiomedicalimagingkth/users/x_julwe/ADNI_npy"
+    
     metadata_path = root_folder
     model_path = os.path.join(root_folder, "pipnet", "models")
-    global_mask_path = os.path.join(dataset_path, "global_mask.npy")
+    model_name1 = "_".join(mod for mod in modalities)
+    model_name2 = "_".join(cl for cl in dic_classes.keys())
+    model_name = f"{model_name1}_{model_name2}"
+
+    global_mask_paths = {}
     
+    for mod in modalities:
+        # Bygg sökvägen automatiskt
+        mask_path = os.path.join(dataset_path, "masks", mod, "global_mask.npy")
+        # Spara i dicten
+        global_mask_paths[mod] = mask_path
     n_fold = 2           # Number of fold
     test_split = 0.2
     seed = 42            # seed for reproducible shuffling
     
     downscaling = 4
-    # rows = int(229/downscaling)
-    # cols = int(193/downscaling)
-    # slices = int(160/downscaling)
     
     channels = net_dic[net]
     num_age_prototypes = 5
     num_classes = len(dic_classes)
     out_shape = num_classes
-    experiment_folder = os.path.join(root_folder, "results", task_performed, net, "fold_" + str(current_fold))
+    task_performed_name = f"{task_performed}_{model_name}"
+    experiment_folder = os.path.join(root_folder, "results", task_performed_name, net, "fold_" + str(current_fold))
     
-    batch_size_pretrain = 16 #12
-    batch_size = 16 #12
-    epochs_pretrain = 10 #10
-    epochs = 60 #60
+    batch_size_pretrain = 2 #16
+    batch_size = 2 #16
+    epochs_pretrain = 1 #10
+    epochs = 2 #60
     optimizer = "Adam"
     lr = 0.05
     lr_age = 0.1
@@ -71,7 +78,7 @@ def get_args(
     lr_net = 0.0001 #0.0005
     weight_decay = 0.1 #0.0
     num_features = 0
-    freeze_epochs = 10
+    freeze_epochs = 1 #10
     gamma = 0.1             # LR's decay factor
     step_size = 7           # LR's frequency decay
     num_workers = 8
@@ -81,11 +88,7 @@ def get_args(
     parser.add_argument('--dataset_path', type = str, default = dataset_path, help = 'Folders path of preprocessed images')
     parser.add_argument('--metadata_path', type = str, default = metadata_path, help = 'Path of .csv metadata file')  
     parser.add_argument('--downscaling', type = int, default = downscaling, help = 'Subsampling factor')
-    # parser.add_argument('--rows', type = int, default = rows, help = 'Number of rows in input image')
-    # parser.add_argument('--cols', type = int, default = cols, help = 'Number of columns in input image')
-    # parser.add_argument('--slices', type = int, default = slices, help = 'Number of slices in input image')
     parser.add_argument('--channels', type = int, default = channels, help = 'N° of channel of the input volume passed to the network')
-    # parser.add_argument('--img_shape', type = tuple, default = (slices, rows, cols), help = 'Shape of the input volume passed to the network')
     parser.add_argument('--dic_classes', type = dict, default = dic_classes, help = 'Dictionary "labels": class_id')
     parser.add_argument('--num_classes', type = int, default = num_classes, help = 'Subsampling factor')
     parser.add_argument('--out_shape', type = int, default = out_shape, help = 'Subsampling factor')
@@ -122,7 +125,9 @@ def get_args(
     parser.add_argument('--bias', default = False, action = 'store_true', help = 'Flag that indicates whether to include a trainable bias in the linear classification layer.')
     parser.add_argument('--extra_test_image_folder', type = str, default = './experiments', help = 'Folder with images that PIP-Net will predict and explain, that are not in the training or test set. E.g. images with 2 objects or OOD image. Images should be in subfolder. E.g. images in ./experiments/images/, and argument --./experiments')
     parser.add_argument('--model_path', type = str, default = model_path, help = 'The models folder')
-    parser.add_argument('--global_mask_path', type = str, default = global_mask_path, help = 'The global mask path')
+    parser.add_argument('--global_mask_paths', type = str, default = global_mask_paths, help = 'The global mask path')
+    parser.add_argument('--modalities', nargs='+', default=modalities)
+    parser.add_argument('--model_name', default=model_name, help="Name of the model. Default is the modalities")
 
     args = parser.parse_args()
     
@@ -333,17 +338,33 @@ def get_optimizer_nn(
     params_to_train = []
     params_backbone = []
     
-    # set up optimizer
-    if 'resnet3D_18' or 'convnetx3D_tiny' in args.net:
+    # --- NY LOGIK: Loopa över ModuleDicts för backbones ---
+    # Eftersom net är DataParallel måste vi gå via net.module
+    
+    # Kontrollera om vi använder 'resnet' eller 'convnext' (din original-check)
+    if 'resnet3D_18' in args.net or 'convnext3D_tiny' in args.net:
         print("Network is ", args.net, flush = True)
-        # Train all the backbone
-        for name, param in net.module._net.named_parameters():
-            params_to_train.append(param)
+        
+        # Loopa igenom alla modaliteter (t.ex. 'mri', 'pet')
+        for modality, backbone in net.module._backbones.items():
+            print(f"Collecting parameters for backbone: {modality}", flush=True)
+            
+            # Samla parametrar från varje backbone
+            for name, param in backbone.named_parameters():
+                params_to_train.append(param)
+                
+                # OBS: Om du vill ha specifik logik för att frysa delar av backbone
+                # (t.ex. första lagren), lägg till den logiken här.
+                # Just nu lägger din kod allt i 'params_to_train'.
+                
     else:
         print("Network not implemented", flush = True)     
     
+    # --- CLASSIFICATION LAYER (Gemensam) ---
     classification_weight = []
     classification_bias = []
+    
+    # Denna del är oförändrad eftersom classification layer är gemensamt
     for name, param in net.module._classification.named_parameters():
         if 'weight' in name:
             classification_weight.append(param)
@@ -353,6 +374,12 @@ def get_optimizer_nn(
             if args.bias:
                 classification_bias.append(param)
     
+    # --- NY LOGIK: Samla alla add-on parametrar ---
+    add_on_params = []
+    for modality, add_on_layer in net.module._add_ons.items():
+        add_on_params.extend(list(add_on_layer.parameters()))
+    
+    # --- PARAMETER LISTS ---
     paramlist_net = [
             {"params": params_backbone, 
              "lr": args.lr_net, 
@@ -363,7 +390,8 @@ def get_optimizer_nn(
             {"params": params_to_train, 
              "lr": args.lr_block, 
              "weight_decay_rate": args.weight_decay},
-            {"params": net.module._add_on.parameters(), 
+            # Här skickar vi in den samlade listan av alla add-ons
+            {"params": add_on_params, 
              "lr": args.lr_block*10., 
              "weight_decay_rate": args.weight_decay}]
             
@@ -384,6 +412,10 @@ def get_optimizer_nn(
             paramlist_classifier,
             lr = args.lr,
             weight_decay = args.weight_decay)
+        
+        # Vi returnerar listorna. Eftersom vi appendade både MRI och PET till 
+        # 'params_to_train', kommer din main-loop automatiskt hantera frysning/
+        # upptining av båda nätverken när den itererar över denna lista.
         return optimizer_net, optimizer_classifier, params_to_freeze, params_to_train, params_backbone
     
     else:

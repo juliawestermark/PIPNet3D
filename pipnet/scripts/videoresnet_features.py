@@ -9,6 +9,7 @@ Created on Tue Mar 19 14:06:11 2024
 from typing import Callable, List, Optional, Sequence, Tuple, Type, Union
 
 from torch import Tensor
+import torch
 import torch.nn as nn
 import torchvision.models as models
 
@@ -214,7 +215,7 @@ class VideoResNet_features(nn.Module):
         return nn.Sequential(*layers)
 
 
-def video_resnet18_features(pretrained=True) -> VideoResNet_features:
+def video_resnet18_features(pretrained=True, in_channels=3) -> VideoResNet_features:
     
     """ Constructs a 3D ResNet-18 model.
     Args:
@@ -230,10 +231,36 @@ def video_resnet18_features(pretrained=True) -> VideoResNet_features:
         weights_dict.pop('fc.weight')
         weights_dict.pop('fc.bias')
         backbone.load_state_dict(weights_dict, strict=False)
+    
+    # --- NEW CODE START ---
+    # Check if we need to modify the first layer for different input channels
+    if in_channels != 3:
+        # The first layer is the first element [0] of the stem (which is a Sequential)
+        old_layer = backbone.stem[0] 
+        
+        # Create a new Conv3d layer with the correct input channels
+        new_layer = nn.Conv3d(
+            in_channels=in_channels,
+            out_channels=old_layer.out_channels,
+            kernel_size=old_layer.kernel_size,
+            stride=old_layer.stride,
+            padding=old_layer.padding,
+            bias=(old_layer.bias is not None)
+        )
+        
+        # Initialize the new layer's weights
+        if pretrained:
+            print(f"[INFO] Adapting backbone from 3 channels to {in_channels} channels.")
+            with torch.no_grad():
+                # Average the original RGB weights to preserve learned patterns
+                # Shape: [Out, 3, D, H, W] -> Mean over dim 1 -> [Out, 1, D, H, W]
+                avg_weights = old_layer.weight.mean(dim=1, keepdim=True)
+                # Replicate these average weights for the new number of channels
+                new_layer.weight.copy_(avg_weights.repeat(1, in_channels, 1, 1, 1))
+        
+        # Replace the old layer in the model
+        backbone.stem[0] = new_layer
+    # --- NEW CODE END ---
         
     return backbone
-
-
-
-
 

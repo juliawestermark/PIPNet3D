@@ -1,7 +1,7 @@
 #!/bin/bash
 # SLURM batch job script for Berzelius
 
-#SBATCH -A Berzelius-2025-212
+#SBATCH -A Berzelius-2025-422
 #SBATCH --gpus=1
 #SBATCH -t 00-02:00:00
 #SBATCH -C thin
@@ -11,4 +11,4 @@ module load Miniforge3/24.7.1-2-hpc1-bdist
 mamba activate thesis
 
 # Execute your code
-python pipnet/scripts/data_mm_preprocessing.py
+python pipnet/scripts/data_mri_preprocessing.py

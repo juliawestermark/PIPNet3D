@@ -19,40 +19,70 @@ class PIPNet(nn.Module):
     
     def __init__(self,
                  num_classes: int,
-                 num_prototypes: int,
-                 feature_net: nn.Module,
-                 args: argparse.Namespace,
-                 add_on_layers: nn.Module,
+                 backbones: nn.ModuleDict,      # Dict: {'mri': net, 'pet': net}
+                 add_on_layers: nn.ModuleDict,  # Dict: {'mri': layer, 'pet': layer}
                  pool_layer: nn.Module,
                  classification_layer: nn.Module
                  ):
         
         super().__init__()
-        assert num_classes > 0
-        self._num_features = args.num_features
         self._num_classes = num_classes
-        self._num_prototypes = num_prototypes
-        self._net = feature_net
-        self._add_on = add_on_layers    # Softmax over ps
-        self._pool = pool_layer         # AdaptiveMaxPooling3D -> Flattening
+        
+        # Viktigt: nn.ModuleDict registrerar sub-modulerna korrekt i PyTorch
+        self._backbones = backbones
+        self._add_ons = add_on_layers
+        
+        # Vi sparar nycklarna (t.ex. ['mri', 'pet']) för att garantera ordningen 
+        # när vi slår ihop vektorerna (concat).
+        self.modalities = list(self._backbones.keys())
+        
+        self._pool = pool_layer
         self._classification = classification_layer
         self._multiplier = classification_layer.normalization_multiplier
 
-    def forward(self, xs, inference=False):
+    def forward(self, xs: dict, masks: dict = None, inference=False):
+        """
+        xs: Dict {'mri': tensor, 'pet': tensor}
+        masks: Dict {'mri': tensor(bs, 1), 'pet': tensor(bs, 1)} (1=present, 0=missing)
+        """
         
-        features = self._net(xs) 
-        proto_features = self._add_on(features) # (bs,ps,d,h,w)
-        pooled = self._pool(proto_features)     # (bs,ps,1,1,1) -> (bs,ps): prototype presence in xs
-        
+        proto_features_dict = {}
+        pooled_list = []
+
+        for modality in self.modalities:
+            x = xs[modality]
+            
+            # 1. Backbone features
+            # (Även noll-bild går igenom här, det är onödig beräkning men enklast kodmässigt)
+            features = self._backbones[modality](x)
+            
+            # 2. Add-on (Prototyper)
+            proto_features = self._add_ons[modality](features)
+            proto_features_dict[modality] = proto_features
+            
+            # 3. Pooling -> (bs, num_prototypes)
+            pooled = self._pool(proto_features) 
+            
+            # 4. MASKING (Här sker magin)
+            if masks is not None and modality in masks:
+                # masks[modality] har shape (bs, 1). pooled har (bs, ps).
+                # Broadcasting ser till att alla prototyper nollas för det samplet.
+                mask = masks[modality].to(pooled.device)
+                pooled = pooled * mask
+            
+            pooled_list.append(pooled)
+
+        # 5. Fusion
+        pooled_combined = torch.cat(pooled_list, dim=1) 
+
         if inference:
-            # during inference, ignore all prototypes that have 0.1 similarity  or lower
-            clamped_pooled = torch.where(pooled < 0.1, 0., pooled) # (bs,ps)
-            out = self._classification(clamped_pooled) # (bs,num_classes)
-            return proto_features, clamped_pooled, out
+            clamped_pooled = torch.where(pooled_combined < 0.1, 0., pooled_combined)
+            out = self._classification(clamped_pooled)
+            return proto_features_dict, clamped_pooled, out
         
         else:
-            out = self._classification(pooled) # (bs*2,num_classes) 
-            return proto_features, pooled, out
+            out = self._classification(pooled_combined)
+            return proto_features_dict, pooled_combined, out
         
         
 base_architecture_to_features = {
@@ -92,48 +122,100 @@ class NonNegLinear(nn.Module):
 
     def forward(self, input: Tensor) -> Tensor:
         return F.linear(input, torch.relu(self.weight), self.bias)
-    
-    
-def get_network(num_classes: int, args: argparse.Namespace): 
-    
 
-    features = base_architecture_to_features[args.net](pretrained = not args.disable_pretrained)
-    
+def _get_backbone_channels(args, features):
+    """Helper to find output channels of the backbone"""
     features_name = str(features).upper()
-    
     if 'next' in args.net:
         features_name = str(args.net).upper()
         
     if features_name.startswith('VIDEO') or features_name.startswith('RES') or features_name.startswith('CONV'):
-        first_add_on_layer_in_channels = [i for i in features.modules() if isinstance(i, nn.Conv3d)][-1].out_channels
-
+        # Hitta sista Conv3d lagret
+        return [i for i in features.modules() if isinstance(i, nn.Conv3d)][-1].out_channels
     else:
         raise Exception('other base architecture NOT implemented')
-    
-    if args.num_features == 0:
-        num_prototypes = first_add_on_layer_in_channels
-        print("Number of prototypes: ", num_prototypes, flush=True)
-        add_on_layers = nn.Sequential(nn.Softmax(dim=1),)  # softmax over every prototype for each patch, such that for every location in image, sum over prototypes is 1                
-              
-    else:
-        num_prototypes = args.num_features
-        print("Number of prototypes set from", first_add_on_layer_in_channels, "to", num_prototypes, ". Extra 1x1x1 conv layer added. Not recommended.", flush=True)
-        
-        add_on_layers = nn.Sequential(
-            nn.Conv3d(in_channels = first_add_on_layer_in_channels, out_channels = num_prototypes, kernel_size = 1, stride = 1, padding = 0, bias = True), 
-            nn.Softmax(dim=1),)  # softmax over every prototype for each patch, such that for every location in image, sum over prototypes is 1
-             
-    pool_layer = nn.Sequential(
-        nn.AdaptiveMaxPool3d(output_size=(1,1,1)), # dim: (bs,ps,1,1,1) 
-        nn.Flatten())                              # dim: (bs,ps)
-         
-    if args.bias:
-        classification_layer = NonNegLinear(num_prototypes, num_classes, bias=True)
 
+
+def _create_add_on_layer(in_channels, num_prototypes):
+    """Helper to create the prototype (add-on) layer"""
+    if num_prototypes == 0:
+        # Om num_features är 0 används antalet kanaler från backbone som antal prototyper
+        # Detta är standard PIPNet beteende
+        return nn.Sequential(nn.Softmax(dim=1),), in_channels
     else:
-        classification_layer = NonNegLinear(num_prototypes, num_classes, bias=False)
+        print(f"Number of prototypes set from {in_channels} to {num_prototypes}. 1x1x1 conv layer added.", flush=True)
+        return nn.Sequential(
+            nn.Conv3d(in_channels=in_channels, out_channels=num_prototypes, kernel_size=1, stride=1, padding=0, bias=True), 
+            nn.Softmax(dim=1),
+        ), num_prototypes
+    
+def get_network(num_classes: int, args: argparse.Namespace): 
+    
+    modalities = args.modalities
+
+    backbones = nn.ModuleDict()
+    add_ons = nn.ModuleDict()
+    total_prototypes = 0
+    prototypes_per_modality = {}
+
+    print(f"Building Multi-Modal PIPNet for: {modalities}", flush=True)
+
+    for mod in modalities:
+        # --- NY KOD BÖRJAR HÄR ---
+        # 1. Bestäm antal kanaler baserat på modalitet
+        if mod == 'mri':
+            channels = 1
+        elif mod == 'amy':
+            channels = 4
+        else:
+            channels = 3 # Fallback om du lägger till något annat (t.ex. RGB-video)
+
+        print(f"  initializing backbone for {mod} (channels={channels})...", flush=True)
         
-    return features, add_on_layers, pool_layer, classification_layer, num_prototypes
+        # 2. Skapa Backbone och skicka med in_channels
+        # OBS: Detta kräver att du har uppdaterat video_resnet18_features enligt min tidigare instruktion!
+        backbone = base_architecture_to_features[args.net](
+            pretrained = not args.disable_pretrained, 
+            in_channels = channels
+        )
+        # --- NY KOD SLUTAR HÄR ---
+        # # 1. Skapa Backbone
+        # # Här antar vi samma arkitektur för alla, men du kan ha en if-sats om du vill ha olika
+        # print(f"  initializing backbone for {mod}...", flush=True)
+        # backbone = base_architecture_to_features[args.net](pretrained = not args.disable_pretrained)
+        
+        # 2. Hitta output channels
+        backbone_out_channels = _get_backbone_channels(args, backbone) # (Använd hjälpfunktionen från förra svaret)
+
+        # 3. Skapa Add-on layer
+        # Här kan du välja om alla ska ha samma antal prototyper eller olika
+        # T.ex. args.num_features delat på antal modaliteter?
+        # För nu kör vi args.num_features per modalitet.
+        add_on, n_protos = _create_add_on_layer(backbone_out_channels, args.num_features)
+        
+        # 4. Lägg in i ModuleDicts
+        backbones[mod] = backbone
+        add_ons[mod] = add_on
+        
+        total_prototypes += n_protos
+        prototypes_per_modality[mod] = n_protos
+
+    # 5. Pooling (delad)
+    pool_layer = nn.Sequential(
+        nn.AdaptiveMaxPool3d(output_size=(1,1,1)), 
+        nn.Flatten()
+    )
+
+    # 6. Classification
+    print(f"Total prototypes: {total_prototypes} {prototypes_per_modality}", flush=True)
+    
+    if args.bias:
+        classification_layer = NonNegLinear(total_prototypes, num_classes, bias=True)
+    else:
+        classification_layer = NonNegLinear(total_prototypes, num_classes, bias=False)
+        
+    # Returnera ModuleDicts istället för enskilda lager
+    return backbones, add_ons, pool_layer, classification_layer, total_prototypes
 
 
 

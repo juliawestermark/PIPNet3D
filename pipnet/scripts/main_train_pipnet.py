@@ -4,6 +4,7 @@
 Created on Tue Dec 12 17:43:20 2023
 
 @author: lisadesanti
+Updated for Multimodal PIPNet (MRI + PET)
 """
 
 import os
@@ -15,12 +16,8 @@ import random
 import torch
 import torch.nn as nn
 
-
-from utils import set_device
-from utils import get_optimizer_nn
-from utils import init_weights_xavier
-from utils import get_args
-from utils import Log
+# Egna moduler
+from utils import set_device, get_optimizer_nn, init_weights_xavier, get_args, Log
 from plot_utils import plot_3d_slices
 from make_dataset import get_dataloaders
 from pipnet import get_network, PIPNet
@@ -28,18 +25,15 @@ from train_model import train_pipnet
 from test_model import eval_pipnet
 from vis_pipnet import visualize_topk
 
-
-
 #%% Global Variables
 
 backbone_dic = {1:"resnet3D_18_kin400", 2:"convnext3D_tiny"}
 
 current_fold = 1
-net = backbone_dic[1]
-net_name = net
-task_performed = "train_pipnet_alzheimer_mri"
+net_type = backbone_dic[1]
+task_performed = "train_pipnet"
 
-args = get_args(current_fold, net, task_performed)
+args = get_args(current_fold, net_type, task_performed)
 
 torch.manual_seed(args.seed)
 torch.cuda.manual_seed_all(args.seed)
@@ -48,9 +42,9 @@ np.random.seed(args.seed)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-
 #%% Get Dataloaders
 
+# Dataloaders returnerar nu (inputs_dict, masks_dict, labels)
 dataloaders = get_dataloaders(args)
 trainloader = dataloaders[0]
 trainloader_pretraining = dataloaders[1]
@@ -63,49 +57,74 @@ test_projectloader = dataloaders[7]
 
 log = Log(args.log_dir)
 
-image, labels = next(iter(projectloader))
+# Check sample (Unpack dictionary)
+sample_inputs, sample_masks, sample_labels = next(iter(projectloader))
+print(f"Sample loaded. Keys: {sample_inputs.keys()}", flush=True)
 
-
-#%% Train the model
+#%% Setup Global Masks (Anatomical)
 
 if not os.path.isdir(args.log_dir):
     os.mkdir(args.log_dir)
 
+# 2. Bygg hela sökvägen till mappen
+# Struktur: args.model_path / binary / amy_mri / resnet3D_18_kin400
+model_save_dir = os.path.join(args.model_path, 'binary', args.model_name, net_type)
 
-# Set the device
+# 3. Skapa mappen om den inte redan finns (VIKTIGT!)
+if not os.path.exists(model_save_dir):
+    os.makedirs(model_save_dir, exist_ok=True)
+    print(f"[INFO] Created model directory: {model_save_dir}")
+
+model_save_path = os.path.join(model_save_dir, 'best_pipnet_fold%s'%str(current_fold))
+
 device, device_ids = set_device(args)
 
-# --- NY KOD: LADDA MASKEN HÄR ---
-mask_path = args.global_mask_path
-global_mask = None
+# Masks
+global_masks = {}
 
-if os.path.exists(mask_path):
-    print(f"Loading global mask from {mask_path}...", flush=True)
-    mask_arr = np.load(mask_path).astype(np.float32)
-    # Gör om till torch tensor och lägg på GPU
-    global_mask = torch.from_numpy(mask_arr).float().to(device)
+# Loopa över nyckel (t.ex. 'mri', 'amy') och sökväg
+for modality, path in args.global_mask_paths.items():
     
-    # OBS: Om masken är (D,H,W), lägg till channel dim så den blir (1, D, H, W)
-    # Detta underlättar i train_model.py senare
-    if global_mask.ndim == 3:
-        global_mask = global_mask.unsqueeze(0)
-else:
-    print(f"WARNING: No mask found at {mask_path}", flush=True)
+    # Default till None om laddning misslyckas eller path saknas
+    global_masks[modality] = None
+    
+    if path and os.path.exists(path):
+        print(f"Loading global {modality.upper()} mask from {path}...", flush=True)
+        try:
+            # 1. Ladda numpy array
+            mask_arr = np.load(path).astype(np.float32)
+            
+            # 2. Konvertera till Tensor och flytta till GPU
+            mask_tensor = torch.from_numpy(mask_arr).float().to(device)
+            
+            # 3. Se till att shape är (1, D, H, W) för broadcasting
+            if mask_tensor.ndim == 3:
+                mask_tensor = mask_tensor.unsqueeze(0)
+            
+            global_masks[modality] = mask_tensor
+            
+        except Exception as e:
+            print(f"ERROR loading {modality} mask from {path}: {e}", flush=True)
+    else:
+        # Om path är None eller filen inte finns
+        if path:
+            print(f"WARNING: Path provided for {modality} but file not found: {path}", flush=True)
+        else:
+            print(f"INFO: No mask path provided for {modality}. Training without mask.", flush=True)
+# else:
+#     print("WARNING: args.global_mask_paths missing or invalid. No masks loaded.", flush=True)
 
-# Create 3D-PIPNet
-network_layers = get_network(args.out_shape, args)
-feature_net = network_layers[0]
-add_on_layers = network_layers[1]
-pool_layer = network_layers[2]
-classification_layer = network_layers[3]
-num_prototypes = network_layers[4]
+print(f"Active global masks: {list(global_masks.keys())}", flush=True)
+
+#%% Initiera Multimodal Modell
+
+# get_network returnerar nu dictionaries för backbones och add-ons
+(backbones, add_ons, pool_layer, classification_layer, num_prototypes) = get_network(args.out_shape, args)
 
 net = PIPNet(
     num_classes = args.out_shape,
-    num_prototypes = num_prototypes,
-    feature_net = feature_net,
-    args = args,
-    add_on_layers = add_on_layers,
+    backbones = backbones,          # Dict
+    add_on_layers = add_ons,        # Dict
     pool_layer = pool_layer,
     classification_layer = classification_layer
     )
@@ -121,12 +140,11 @@ params_to_train = optimizer[3]
 params_backbone = optimizer[4]   
 
     
-# Initialize or load model
+# Initialize or load model (State Dicts)
 with torch.no_grad():
     
     if args.state_dict_dir_net != '':
-        
-        epoch = 0
+        # Load checkpoint logic (kan behöva anpassas om nyckel-namnen ändrats i state_dict)
         checkpoint = torch.load(args.state_dict_dir_net, map_location = device)
         net.load_state_dict(checkpoint['model_state_dict'], strict = True) 
         print("Pretrained network loaded", flush = True)
@@ -137,32 +155,32 @@ with torch.no_grad():
         except:
             pass
         
-        if torch.mean(net.module._classification.weight).item() > 1.0 and torch.mean(net.module._classification.weight).item() < 3.0 and torch.count_nonzero(torch.relu(net.module._classification.weight-1e-5)).float().item() > 0.8*(num_prototypes*args.num_classes): 
-
-            print("We assume that the classification layer is not yet  trained. We re-initialize it...", flush = True) # e.g. loading a pretrained backbone only
-            torch.nn.init.normal_(net.module._classification.weight, mean = 1.0, std = 0.1) 
-            torch.nn.init.constant_(net.module._multiplier, val = 2.)
-            print("Classification layer initialized with mean", torch.mean(net.module._classification.weight).item(), flush = True)
-            
-            if args.bias:
+        # Check classification layer initialization
+        if torch.mean(net.module._classification.weight).item() > 1.0 and torch.mean(net.module._classification.weight).item() < 3.0 and torch.count_nonzero(torch.relu(net.module._classification.weight-1e-5)).float().item() > 0.8*(num_prototypes*args.num_classes):
+             print("Re-initializing classification layer...", flush = True)
+             torch.nn.init.normal_(net.module._classification.weight, mean = 1.0, std = 0.1) 
+             torch.nn.init.constant_(net.module._multiplier, val = 2.)
+             if args.bias:
                 torch.nn.init.constant_(net.module._classification.bias, val = 0.)
         else:
             if 'optimizer_classifier_state_dict' in checkpoint.keys():
                 optimizer_classifier.load_state_dict(checkpoint['optimizer_classifier_state_dict'])
         
     else:
-        net.module._add_on.apply(init_weights_xavier)
+        # Initiera add-ons för alla modaliteter
+        for mod in net.module._add_ons.keys():
+            net.module._add_ons[mod].apply(init_weights_xavier)
+            
         torch.nn.init.normal_(net.module._classification.weight, mean = 1.0, std = 0.1) 
-        
         if args.bias:
             torch.nn.init.constant_(net.module._classification.bias, val = 0.)
             
         torch.nn.init.constant_(net.module._multiplier, val = 2.)
         net.module._multiplier.requires_grad = False
 
-        print("Classification layer initialized with mean", torch.mean(net.module._classification.weight).item(), flush = True)
+        print("Classification layer initialized", flush = True)
 
-# Define classification loss function and scheduler
+# Loss & Scheduler
 criterion = nn.NLLLoss(reduction='mean').to(device)
 
 scheduler_net = torch.optim.lr_scheduler.CosineAnnealingLR(
@@ -171,54 +189,63 @@ scheduler_net = torch.optim.lr_scheduler.CosineAnnealingLR(
     eta_min = args.lr_block/100., 
     last_epoch=-1)
 
-# Forward one batch through the backbone to get the latent output size
+# --- Output Shape Check ---
+# Vi kör en batch genom nätet för att se dimensionerna
 with torch.no_grad():
-    xs1, _, _ = next(iter(trainloader))
-    xs1 = xs1.to(device)
-    proto_features, _, _ = net(xs1)
-    wshape = proto_features.shape[-1]
-    hshape = proto_features.shape[-2]
-    dshape = proto_features.shape[-3]
-    args.wshape = wshape # needed for calculating image patch size
-    args.hshape = hshape # needed for calculating image patch size
-    args.dshape = dshape # needed for calculating image patch size
-    print("Output shape: ", proto_features.shape, flush=True)
+    # Packa upp dict och flytta till device
+    xs1, xs2, ms1, _ = next(iter(trainloader))
+    for k in xs1: xs1[k] = xs1[k].to(device)
+    for k in ms1: ms1[k] = ms1[k].to(device)
 
-if net.module._num_classes == 2:
+    proto_out, _, _ = net(xs1, masks=ms1)
     
-    # Create a csv log for storing the test accuracy, F1-score, mean train 
-    # accuracy and mean loss for each epoch
+    # Kolla shape på första modaliteten (t.ex. mri) för loggning
+    # proto_out är en dict {'mri': tensor, 'pet': tensor}
+    first_feat = list(proto_out.values())[0]
+    wshape = first_feat.shape[-1]
+    hshape = first_feat.shape[-2]
+    dshape = first_feat.shape[-3]
+    args.wshape = wshape 
+    args.hshape = hshape 
+    args.dshape = dshape
+    print(f"Output shape (from one modality): {first_feat.shape}", flush=True)
+
+# Logging Setup
+if args.out_shape == 2:
     log.create_log('log_epoch_overview', 'epoch', 'test_top1_acc', 'test_f1', 'almost_sim_nonzeros', 'local_size_all_classes', 'almost_nonzeros_pooled', 'num_nonzero_prototypes', 'mean_train_acc', 'mean_train_loss_during_epoch')
     print("Your dataset only has two classes. Is the number of samples per class similar? If the data is imbalanced, we recommend to use the --weighted_loss flag to account for the imbalance.", flush = True)
-        
 else:
-    
-    # Create a csv log for storing the test accuracy (top 1 and top 5), 
-    # mean train accuracy and mean loss for each epoch
     log.create_log('log_epoch_overview', 'epoch', 'test_top1_acc', 'test_top3_acc', 'almost_sim_nonzeros', 'local_size_all_classes', 'almost_nonzeros_pooled', 'num_nonzero_prototypes', 'mean_train_acc', 'mean_train_loss_during_epoch')
 
-
 lrs_pretrain_net = []
+
 
 
 #%% 3D-PIPNet Training
 
 #%% PHASE (1): Pretraining Prototypes
 for epoch in range(1, args.epochs_pretrain+1):
-    for param in params_to_train:
-        param.requires_grad = True
-    for param in net.module._add_on.parameters():
-        param.requires_grad = True
+    
+    # --- UPPDATERAD FREEZING LOGIC FÖR MULTIMODAL ---
+    # Vi måste loopa över dictionaries nu
+    
+    for param in params_to_train: param.requires_grad = True
+    
+    # Unfreeze all add-ons
+    for mod in net.module._add_ons.keys():
+        for param in net.module._add_ons[mod].parameters():
+            param.requires_grad = True
+            
+    # Freeze classifier
     for param in net.module._classification.parameters():
         param.requires_grad = False
-    for param in params_to_freeze:
-        param.requires_grad = True  # can be set to False when you want to freeze more layers
-    for param in params_backbone:
-        param.requires_grad = False # can be set to True when you want to train whole backbone (e.g. if dataset is very different from ImageNet)
+        
+    # Backbone freezing logic
+    for param in params_to_freeze: param.requires_grad = True 
+    for param in params_backbone: param.requires_grad = False 
     
-    print("\nPretrain Epoch", epoch, "with batch size", trainloader_pretraining.batch_size, flush = True)
+    print("\nPretrain Epoch", epoch, flush = True)
     
-    # Pretrain prototypes
     train_info = train_pipnet(
         net, 
         trainloader_pretraining, 
@@ -232,7 +259,8 @@ for epoch in range(1, args.epochs_pretrain+1):
         device, 
         pretrain = True, 
         finetune = False,
-        mask = global_mask)
+        mask = global_masks
+    )
     
     lrs_pretrain_net += train_info['lrs_net']
     plt.clf()
@@ -244,92 +272,75 @@ if args.state_dict_dir_net == '':
     net.eval()
     torch.save({'model_state_dict': net.state_dict(), 'optimizer_net_state_dict': optimizer_net.state_dict()}, os.path.join(os.path.join(args.log_dir, 'checkpoints'), 'net_pretrained'))
     net.train()
-    
-# with torch.no_grad():
-#     if args.epochs_pretrain > 0:
-#         print("Visualize top-k")
-#         topks, img_prototype, proto_coord = visualize_topk(net, projectloader, len(args.dic_classes), device, 'visualised_pretrained_prototypes_topk', args, save=False)
- 
-    
-#%% PHASE (2): Training PIPNet
 
-# Re-initialize optimizers and schedulers for second training phase
+#%% PHASE (2): Training PIPNet (Full Training)
+
+# Re-initialize optimizers
 optimizer = get_optimizer_nn(net, args)
 optimizer_net = optimizer[0]
 optimizer_classifier = optimizer[1] 
-params_to_freeze = optimizer[2] 
-params_to_train = optimizer[3] 
-params_backbone = optimizer[4] 
+# Note: params listorna måste vara uppdaterade för dicts (antas funka via rekursion i get_optimizer_nn)
         
 scheduler_net = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer_net, T_max = len(trainloader)*args.epochs, eta_min = args.lr_net/100.)
 
-# Scheduler for the classification layer is with restarts, such that the 
-# model can re-active zeroed-out prototypes. Hence an intuitive choice. 
 if args.epochs <= 30:
     scheduler_classifier = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer_classifier, T_0 = 5, eta_min = 0.001, T_mult = 1)
 else:
     scheduler_classifier = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer_classifier, T_0 = 10, eta_min = 0.001, T_mult = 1)
         
-for param in net.module.parameters():
-    param.requires_grad = False
-for param in net.module._classification.parameters():
-    param.requires_grad = True
+# Grundinställning: Frys allt utom classifier
+for param in net.module.parameters(): param.requires_grad = False
+for param in net.module._classification.parameters(): param.requires_grad = True
 
 frozen = True
 lrs_net = []
 lrs_classifier = []
-ba_val_old = 0 # balanced accuracy in validation set
+ba_val_old = 0
    
 for epoch in range(1, args.epochs + 1): 
                  
-    epochs_to_finetune = 3  # during finetuning, only train classification layer and freeze rest. usually done for a few  epochs (at least 1, more depends on size of  dataset)
-    if epoch <= epochs_to_finetune and (args.epochs_pretrain > 0 or args.state_dict_dir_net != ''):
-        for param in net.module._add_on.parameters():
-            param.requires_grad = False
-        for param in params_to_train:
-            param.requires_grad = False
-        for param in params_to_freeze:
-            param.requires_grad = False
-        for param in params_backbone:
-            param.requires_grad = False
-        finetune = True
+    epochs_to_finetune = 3 
     
+    # --- LOGIK FÖR FINETUNING / UNFREEZING ---
+    if epoch <= epochs_to_finetune and (args.epochs_pretrain > 0 or args.state_dict_dir_net != ''):
+        finetune = True
+        # Frys allt utom classifier
+        for mod in net.module._add_ons.keys():
+            for param in net.module._add_ons[mod].parameters(): param.requires_grad = False
+            for param in net.module._backbones[mod].parameters(): param.requires_grad = False # Explicit safety
+        
     else: 
         finetune = False          
         if frozen:
-            # unfreeze backbone
+            # UNFREEZE BACKBONE (Successively)
             if epoch > (args.freeze_epochs):
-                for param in net.module._add_on.parameters():
-                    param.requires_grad = True
-                for param in params_to_freeze:
-                    param.requires_grad = True
-                for param in params_to_train:
-                    param.requires_grad = True
-                for param in params_backbone:
-                    param.requires_grad = True   
+                for mod in net.module._backbones.keys():
+                    for param in net.module._add_ons[mod].parameters(): param.requires_grad = True
+                    # Här antar vi att params_to_freeze / params_backbone pekar på rätt parametrar
+                    # Om inte, loopa explicit:
+                    for param in net.module._backbones[mod].parameters(): param.requires_grad = True
+                
+                # Generella listor från optimizer-helpern
+                for param in params_to_freeze: param.requires_grad = True
+                for param in params_to_train: param.requires_grad = True
+                for param in params_backbone: param.requires_grad = True   
                 frozen = False
-            # freeze first layers of backbone, train rest
+            
+            # FREEZE FIRST LAYERS ONLY
             else:
-                for param in params_to_freeze:
-                    param.requires_grad = True # Can be set to False if you want to train fewer layers of backbone
-                for param in net.module._add_on.parameters():
-                    param.requires_grad = True
-                for param in params_to_train:
-                    param.requires_grad = True
-                for param in params_backbone:
-                    param.requires_grad = False
+                for param in params_to_freeze: param.requires_grad = True 
+                for mod in net.module._add_ons.keys():
+                    for param in net.module._add_ons[mod].parameters(): param.requires_grad = True
+                for param in params_to_train: param.requires_grad = True
+                for param in params_backbone: param.requires_grad = False
     
     print("\n Epoch", epoch, "frozen:", frozen, flush = True)  
       
+    # Pruning av små vikter i klassificeraren
     if (epoch == args.epochs or epoch%30 == 0) and args.epochs > 1:
-        
-        # Set small weights to zero
         with torch.no_grad():
             torch.set_printoptions(profile = "full")
             net.module._classification.weight.copy_(torch.clamp(net.module._classification.weight.data - 0.001, min=0.)) 
-            print("Classifier weights: ", net.module._classification.weight[net.module._classification.weight.nonzero( as_tuple = True)], (net.module._classification.weight[ net.module._classification.weight.nonzero(as_tuple = True)]).shape, flush = True)
-            if args.bias:
-                print("Classifier bias: ", net.module._classification.bias, flush = True)
             torch.set_printoptions(profile = "default")
     
     train_info = train_pipnet(
@@ -345,33 +356,39 @@ for epoch in range(1, args.epochs + 1):
         device, 
         pretrain = False, 
         finetune = finetune,
-        mask = global_mask)
+        mask = global_masks
+    )
     
     lrs_net += train_info['lrs_net']
     lrs_classifier += train_info['lrs_class']
     
-    
-    # Evaluate model
-
+    # Evaluate
     eval_info = eval_pipnet(net, valloader, epoch, device, log)
-    log.log_values('log_epoch_overview',  epoch, eval_info['top1_accuracy'], eval_info['top3_accuracy'], eval_info['almost_sim_nonzeros'], eval_info['local_size_all_classes'], eval_info['almost_nonzeros'], eval_info['num non-zero prototypes'], train_info['train_accuracy'], train_info['loss'])
-    ba_val = eval_info["balanced_accuracy"]
     
+    log.log_values('log_epoch_overview',  epoch, eval_info['top1_accuracy'], eval_info['top3_accuracy'], eval_info['almost_sim_nonzeros'], eval_info['local_size_all_classes'], eval_info['almost_nonzeros'], eval_info['num non-zero prototypes'], train_info['train_accuracy'], train_info['loss'])
+    
+    # Save Checkpoints
+    ba_val = eval_info["balanced_accuracy"]
     with torch.no_grad():
         net.eval()
-        torch.save({'model_state_dict': net.state_dict(), 'optimizer_net_state_dict': optimizer_net.state_dict(), 'optimizer_classifier_state_dict': optimizer_classifier.state_dict()}, os.path.join(os.path.join(args.log_dir, 'checkpoints'), 'net_trained'))
+        save_dict = {
+            'model_state_dict': net.state_dict(), 
+            'optimizer_net_state_dict': optimizer_net.state_dict(), 
+            'optimizer_classifier_state_dict': optimizer_classifier.state_dict()
+        }
+        
+        torch.save(save_dict, os.path.join(os.path.join(args.log_dir, 'checkpoints'), 'net_trained'))
         
         if ba_val >= ba_val_old: 
-            # Save pipnet weights which obtained highest balanced accuracy in the validation set
-            net.eval()
-            torch.save({'model_state_dict': net.state_dict(), 'optimizer_net_state_dict': optimizer_net.state_dict(), 'optimizer_classifier_state_dict': optimizer_classifier.state_dict()}, os.path.join(os.path.join(args.log_dir, 'checkpoints'), 'best_pipnet_fold%s'%str(current_fold)))
-            torch.save({'model_state_dict': net.state_dict(), 'optimizer_net_state_dict': optimizer_net.state_dict(), 'optimizer_classifier_state_dict': optimizer_classifier.state_dict()}, os.path.join(os.path.join(args.model_path, 'binary', net_name), 'best_pipnet_fold%s'%str(current_fold)))
+            print(f"New best Balanced Acc: {ba_val:.4f} (prev: {ba_val_old:.4f})", flush=True)
+            ba_val_old = ba_val
+            torch.save(save_dict, os.path.join(os.path.join(args.log_dir, 'checkpoints'), 'best_pipnet_fold%s'%str(current_fold)))
+            torch.save({'model_state_dict': net.state_dict(), 'optimizer_net_state_dict': optimizer_net.state_dict(), 'optimizer_classifier_state_dict': optimizer_classifier.state_dict()}, model_save_path)
 
         if epoch%30 == 0:
-            net.eval()
-            torch.save({'model_state_dict': net.state_dict(), 'optimizer_net_state_dict': optimizer_net.state_dict(), 'optimizer_classifier_state_dict': optimizer_classifier.state_dict()}, os.path.join(os.path.join(args.log_dir, 'checkpoints'), 'net_trained_%s'%str(epoch)))            
+            torch.save(save_dict, os.path.join(os.path.join(args.log_dir, 'checkpoints'), 'net_trained_%s'%str(epoch)))            
     
-        # save learning rate in figure
+        # Plot LRs
         plt.clf()
         plt.plot(lrs_net)
         plt.savefig(os.path.join(args.log_dir,'lr_net.png'))
@@ -379,10 +396,15 @@ for epoch in range(1, args.epochs + 1):
         plt.plot(lrs_classifier)
         plt.savefig(os.path.join(args.log_dir,'lr_class.png'))
 
+# Final Save
 net.eval()
 torch.save({'model_state_dict': net.state_dict(), 'optimizer_net_state_dict': optimizer_net.state_dict(), 'optimizer_classifier_state_dict': optimizer_classifier.state_dict()}, os.path.join(os.path.join(args.log_dir, 'checkpoints'),'net_trained_last'))
 
+# Visualization & Pruning of unused prototypes
+print("Visualizing Prototypes...", flush=True)
 topks, img_prototype, proto_coord = visualize_topk(net, projectloader, args.num_classes, device, 'visualised_prototypes_topk', args, save=False)
+
+# ... (Pruning logic same as before) ...
 
 # set weights of prototypes that are never really found in projection set to 0
 set_to_zero = []

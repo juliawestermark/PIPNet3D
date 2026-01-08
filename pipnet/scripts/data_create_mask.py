@@ -2,25 +2,27 @@ import os
 import numpy as np
 import nibabel as nib
 from nilearn.image import mean_img, threshold_img
-from make_mri_dataset import setup_mri_dataframe # Din befintliga import
+from make_mm_dataset import load_dataset
 
-ADNI_PATH = "/proj/berzbiomedicalimagingkth/users/x_julwe/ADNI/ADNI_complete"
-OUTPUT_ROOT = "/proj/berzbiomedicalimagingkth/users/x_julwe/ADNI_npy"
-#ADNI_PATH = "/home/maia-user/ADNI_complete"
-#OUTPUT_ROOT = "/home/maia-user/ADNI_npy"
-GLOBAL_MASK_PATH = os.path.join(OUTPUT_ROOT, "global_brain_mask_nilearn.npy")
+def create_global_mask(modality, ADNI_PATH_MRI, ADNI_PATH_PET, OUTPUT_ROOT):
+    MASK_FILENAME_NII = "global_mask.nii.gz"
+    MASK_FILENAME_NPY = "global_mask.npy"
+    mask_dir = os.path.join(OUTPUT_ROOT, "masks")
 
-MASK_FILENAME_NII = "global_mask.nii.gz"
-MASK_FILENAME_NPY = "global_mask.npy"
+    if not os.path.isdir(mask_dir):
+        os.mkdir(mask_dir)
+    modality_dir = os.path.join(mask_dir, modality)
+    if not os.path.isdir(modality_dir):
+        os.mkdir(modality_dir)
 
-def create_global_mask():
     print("1. Laddar lista över filer...")
     # Hämta filvägar med din befintliga funktion
-    df = setup_mri_dataframe(adni_path=ADNI_PATH)
-    
+    file_path_modality = f"file_path_{modality}"
+    dataset = load_dataset(mode="nii", classes=["CN", "MCI", "AD"], adni_path_mri=ADNI_PATH_MRI, adni_path_pet=ADNI_PATH_PET)
+    df = dataset[dataset[file_path_modality].notna()]
     # OBS: Om datasetet är enormt, ta ett robust stickprov (t.ex. 200 slumpmässiga bilder) 
     # för att spara RAM. Det brukar räcka för en global mask.
-    nifti_files = df["file_path"].sample(n=min(200, len(df)), random_state=42).tolist()
+    nifti_files = df[file_path_modality].sample(n=min(200, len(df)), random_state=42).tolist()
     print(f"Använder {len(nifti_files)} bilder för att bygga genomsnittet.")
 
     # --- Steg A: Skapa mask med Nilearn (NIfTI) ---
@@ -28,14 +30,14 @@ def create_global_mask():
     mean_brain = mean_img(nifti_files)
     
     # Spara medelbilden för att kunna dubbelkolla visuellt senare
-    mean_brain.to_filename(os.path.join(OUTPUT_ROOT, "mean_brain_reference.nii.gz"))
+    mean_brain.to_filename(os.path.join(modality_dir, "mean_brain_reference.nii.gz"))
 
     print("3. Trösklar och skapar binär mask...")
     # threshold=0.1 är ofta bra för normaliserad data, justera vid behov
     mask_nii = threshold_img(mean_brain, threshold=0.1, copy=True)
     
     # Spara NIfTI-versionen (bra för visualisering i program som ITK-SNAP/FSL)
-    nii_save_path = os.path.join(OUTPUT_ROOT, MASK_FILENAME_NII)
+    nii_save_path = os.path.join(modality_dir, MASK_FILENAME_NII)
     mask_nii.to_filename(nii_save_path)
     print(f"NIfTI-mask sparad till: {nii_save_path}")
 
@@ -52,11 +54,22 @@ def create_global_mask():
     mask_arr = (mask_arr > 0.001).astype(np.uint8) # Gör den strikt binär (0 eller 1)
 
     # Spara som .npy
-    npy_save_path = os.path.join(OUTPUT_ROOT, MASK_FILENAME_NPY)
+    npy_save_path = os.path.join(modality_dir, MASK_FILENAME_NPY)
     np.save(npy_save_path, mask_arr)
     
     print(f"✅ Klar! Global mask sparad som .npy: {npy_save_path}")
     print(f"Maskens dimensioner: {mask_arr.shape}")
 
 if __name__ == "__main__":
-    create_global_mask()
+    # BASE_PATH = "/proj/berzbiomedicalimagingkth/users/x_julwe"
+    # MRI_ADNI_PATH = os.path.join(BASE_PATH, "ADNI", "ADNI_complete")
+    # PET_ADNI_PATH = os.path.join(BASE_PATH, "ADNI", "ADNI_PET", "ADNI")
+
+    BASE_PATH = "/home/maia-user"
+    MRI_ADNI_PATH = os.path.join(BASE_PATH, "ADNI_complete")
+    PET_ADNI_PATH = os.path.join(BASE_PATH, "ADNI_PET", "ADNI")
+    modality="mri"
+    
+    OUTPUT_ROOT = os.path.join(BASE_PATH, "ADNI_npy")
+
+    create_global_mask(modality, MRI_ADNI_PATH, PET_ADNI_PATH, OUTPUT_ROOT)

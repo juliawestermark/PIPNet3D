@@ -6,7 +6,7 @@ import pandas as pd
 import nibabel as nib
 from tqdm.auto import tqdm
 import shutil
-from make_mri_dataset import setup_mri_dataframe
+from make_pet_dataset import setup_pet_dataframe
 from datetime import datetime
 
 def convert_single_file(nii_path, save_path):
@@ -26,12 +26,12 @@ def convert_single_file(nii_path, save_path):
     np.save(save_path, arr)
 
 
-def convert_all_mri(df, output_root):
+def convert_all_pet(df, output_root, pet_type):
     """
     df = mri_merged returned by setup_mri_dataframe()
-    Converts all NIfTI MRI files to .npy in structure:
+    Converts all NIfTI PET files to .npy in structure:
     
-        <output_root>/<subject_id>/mri/<exam_id>.npy
+        <output_root>/<subject_id>/<pet_type>/<exam_id>.npy
     """
 
     processed = 0
@@ -46,7 +46,7 @@ def convert_all_mri(df, output_root):
         exam_id = row["exam_id"]
 
         # output path
-        save_path = os.path.join(output_root, subject, "mri", f"{exam_id}.npy")
+        save_path = os.path.join(output_root, subject, pet_type, f"{exam_id}.npy")
 
         # SKIP if file already exists
         if os.path.exists(save_path):
@@ -83,14 +83,13 @@ def convert_all_mri(df, output_root):
     return processed, converted, skipped, failed
 
 
-def copy_csv_files(output_path, collection_path, demographics_path, dxsum_path):
+def copy_csv_files(output_path, amy_csv, tau_csv):
     """Copy relevant ADNI CSVs into OUTPUT_ROOT/csv/."""
     os.makedirs(output_path, exist_ok=True)
 
     files = {
-        "OutputCollection.csv": collection_path,
-        "participant_demographics.csv": demographics_path,
-        "DXSUM_PDXCONV_ADNIALL.csv": dxsum_path,
+        "UCBERKELEY_AMY_6MM_02Apr2025.csv": amy_csv,
+        "UCBERKELEY_TAU_6MM_02Apr2025.csv": tau_csv,
     }
 
     for filename, src in files.items():
@@ -107,25 +106,26 @@ if __name__ == "__main__":
     print("Start time:", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     
     # Paths
-    #ADNI_PATH = "/home/maia-user/ADNI_complete"
-    ADNI_PATH = "/proj/berzbiomedicalimagingkth/users/x_julwe/ADNI/ADNI_complete"
-    #OUTPUT_ROOT = "/home/maia-user/ADNI_npy"
-    OUTPUT_ROOT = "/proj/berzbiomedicalimagingkth/users/x_julwe/ADNI_npy"
+    ADNI_PATH = "/home/maia-user/ADNI_PET/ADNI"
+    OUTPUT_ROOT = "/home/maia-user/ADNI_npy"
+    #ADNI_PATH = "/proj/berzbiomedicalimagingkth/users/x_julwe/ADNI/ADNI_PET"
+    #OUTPUT_ROOT = "/proj/berzbiomedicalimagingkth/users/x_julwe/ADNI_npy"
 
-    COLLECTION_PATH = os.path.join(ADNI_PATH, "OutputCollection.csv")
-    DEMOGRAPHICS_PATH = os.path.join(ADNI_PATH, "participant_demographics.csv")
-    DXSUM_PATH = os.path.join(ADNI_PATH, "DXSUM_PDXCONV_ADNIALL.csv")
+    amy_file_name = "UCBERKELEY_AMY_6MM_02Apr2025.csv"
+    pet_type = "amy"
+    amy_csv_file = os.path.join(ADNI_PATH, amy_file_name)
+    tau_csv_file = os.path.join(ADNI_PATH, "UCBERKELEY_TAU_6MM_02Apr2025.csv")
     CSV_OUTPUT_DIR = os.path.join(OUTPUT_ROOT, "csv")
 
     # Copy CSV files
-    copy_csv_files(CSV_OUTPUT_DIR, COLLECTION_PATH, DEMOGRAPHICS_PATH, DXSUM_PATH)
+    copy_csv_files(CSV_OUTPUT_DIR, amy_csv_file, tau_csv_file)
     
     # Prepare dataframe
-    df = setup_mri_dataframe(adni_path=ADNI_PATH)
-    print(f"Total MRI files to process: {len(df)}")
-    # Convert all MRI files
+    df = setup_pet_dataframe(identifier="AV45", adni_path=ADNI_PATH, adni_pet_file_name=amy_file_name)
+    print(f"Total PET files to process: {len(df)}")
+    # Convert all PET files
     # processed, converted, skipped, failed = convert_all_mri(df, OUTPUT_ROOT)
-    processed, converted, skipped, failed = convert_all_mri(df.iloc[0:10000], OUTPUT_ROOT)
+    processed, converted, skipped, failed = convert_all_pet(df.iloc[0:10], OUTPUT_ROOT, pet_type)
 
     # Done
     print("All done!")

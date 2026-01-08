@@ -16,6 +16,8 @@ import pickle
 import random
 import torch.optim
 from datetime import datetime
+import matplotlib.cm as cm
+import os
 
 
 
@@ -194,3 +196,111 @@ def plot_atlas_overlay(data, data_atlas, num_columns=10, title=False,):
     
     plt.show()
     plt.close(f)
+
+
+def plot_proto_distribution_dynamic(proto_df, weights, modality_indices, log_dir, reference_volume=None):
+    fig = plt.figure(figsize=(16, 12))
+    ax = fig.add_subplot(111, projection='3d')
+    
+    # Standardgränser
+    max_d, max_h, max_w = 64, 64, 64
+    
+    # --- STEG 1: Rita 3 st tvärsnitt (Slices) för kontext ---
+    if reference_volume is not None:
+        print("[INFO] Plotting anatomical slices...", flush=True)
+        vol = reference_volume
+        d, h, w = vol.shape
+        max_d, max_h, max_w = d, h, w
+        
+        # Hitta mitten
+        mid_d, mid_h, mid_w = d // 2, h // 2, w // 2
+        
+        # Skapa koordinat-nät för snitten
+        dd, hh = np.meshgrid(np.arange(d), np.arange(h))
+        dd_w, ww = np.meshgrid(np.arange(d), np.arange(w))
+        hh_z, ww_z = np.meshgrid(np.arange(h), np.arange(w))
+
+        # Vi använder contourf för att rita "bilder" i 3D-rymden.
+        # cmap='gray' ger oss den klassiska MRI-looken.
+        # alpha=0.4 gör dem genomskinliga så vi ser prototyper bakom.
+        
+        # Snitt 1: Sagittal (Sedd från sidan, fixerad Width)
+        # zdir='z', offset=mid_w betyder att vi ritar planet vid z=mitten
+        ax.contourf(dd, hh, vol[:, :, mid_w], zdir='z', offset=mid_w, cmap='gray', alpha=0.3)
+        
+        # Snitt 2: Coronal (Sedd framifrån, fixerad Depth)
+        # zdir='x', offset=mid_d betyder att vi ritar planet vid x=mitten
+        # Notera: Vi måste transponera matrisen ibland för att orienteringen ska bli rätt
+        ax.contourf(vol[mid_d, :, :].T, hh_z, ww_z, zdir='x', offset=mid_d, cmap='gray', alpha=0.3)
+        
+        # Snitt 3: Axial (Sedd uppifrån, fixerad Height)
+        # zdir='y', offset=mid_h
+        ax.contourf(dd_w, vol[:, mid_h, :], ww, zdir='y', offset=mid_h, cmap='gray', alpha=0.3)
+        
+        # --- LÄGG TILL TEXT FÖR ORIENTERING ---
+        # Detta är gissade standard-riktningar. Justera om din data är roterad annorlunda.
+        # ax.text(0, mid_h, mid_w, "Posterior/Back", color='black', fontsize=10, weight='bold')
+        # ax.text(max_d, mid_h, mid_w, "Anterior/Front", color='black', fontsize=10, weight='bold')
+        # ax.text(mid_d, max_h, mid_w, "Superior/Top", color='black', fontsize=10)
+        # ax.text(mid_d, mid_h, 0, "Right", color='black', fontsize=10)
+        # ax.text(mid_d, mid_h, max_w, "Left", color='black', fontsize=10)
+
+    # --- STEG 2: Rita Prototyperna ---
+    print("[INFO] Plotting prototypes...", flush=True)
+    mods = list(modality_indices.keys())
+    colors = cm.rainbow(np.linspace(0, 1, len(mods)))
+    mod_colors = {mod: color for mod, color in zip(mods, colors)}
+    
+    for idx, row in proto_df.iterrows():
+        if row['detection_rate'] == 0: continue
+
+        my_mod = None
+        for mod, (start, end) in modality_indices.items():
+            if start <= idx < end:
+                my_mod = mod
+                break
+        if my_mod is None: continue
+
+        w = weights[:, idx].max().item()
+        
+        if w > 1e-3: 
+            c = mod_colors[my_mod]
+            # Rita bollen. edgecolors='black' ger en tydlig kant så den "poppar" ut
+            ax.scatter(row['mean_pcc_d'], row['mean_pcc_h'], row['mean_pcc_w'], 
+                       color=c, s=w*600, alpha=1.0, edgecolors='black', linewidth=1.0)
+            
+            # Valfritt: Dra ett streck från bollen ner till "golvet" för att se djupet
+            # ax.plot([row['mean_pcc_d'], row['mean_pcc_d']], 
+            #         [row['mean_pcc_h'], row['mean_pcc_h']], 
+            #         [0, row['mean_pcc_w']], color='gray', linestyle='--', linewidth=0.5, alpha=0.5)
+
+    ax.set_xlabel('Depth (x)')
+    ax.set_ylabel('Height (y)')
+    ax.set_zlabel('Width (z)')
+    
+    ax.set_xlim(0, max_d)
+    ax.set_ylim(0, max_h)
+    ax.set_zlim(0, max_w)
+    
+    # Legend
+    from matplotlib.lines import Line2D
+    custom_lines = [Line2D([0], [0], color=mod_colors[mod], marker='o', linestyle='') for mod in mods]
+    ax.legend(custom_lines, [m.upper() for m in mods], loc='upper left')
+
+    # --- STEG 3: SPARA FLERA VINKLAR ---
+    views = [
+        ('iso', 25, -45),      # Standard översikt
+        ('top', 90, -90),      # Uppifrån
+        ('side', 0, 0),        # Sidan
+        ('front', 0, -90)      # Framifrån
+    ]
+    
+    base_path = os.path.join(log_dir, "prototype_spatial_dist_slices")
+    
+    for name, elev, azim in views:
+        ax.view_init(elev=elev, azim=azim)
+        save_path = f"{base_path}_{name}.png"
+        plt.savefig(save_path, dpi=300)
+        print(f"[INFO] Saved view '{name}' to {save_path}")
+
+    plt.close(fig)

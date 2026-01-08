@@ -34,78 +34,92 @@ from monai.transforms import (
 from sklearn.model_selection import train_test_split
 from sklearn.model_selection import StratifiedKFold
 
-from make_mri_dataset import setup_npy_mri_dataframe
+from make_mm_dataset import load_npy_dataset
     
 
-def build_preprocessed_paths(df, preprocessed_root, dic_classes):
+def build_preprocessed_paths(df, dic_classes, modalities):
     """
-    Bygger paths till .npy och omvandlar clinical_stage → label.
+    Extraherar paths dynamiskt för alla angivna modaliteter.
     Returnerar:
-        X_paths : np.array med paths
+        X_paths : Dict {modality: np.array}
         y       : np.array med int labels
     """
-    paths = []
+    # 1. Initiera dictionary med tomma listor för varje modalitet
+    # Ex: {'mri': [], 'amy': []}
+    paths_dict = {mod: [] for mod in modalities}
     labels = []
 
     for _, row in df.iterrows():
-        npy_path = row["file_path"]
-
-        paths.append(npy_path)
         labels.append(dic_classes[row["clinical_stage"]])
 
-    return np.array(paths), np.array(labels)
+        # 2. Loopa över modaliteterna för att hitta rätt kolumn
+        for mod in modalities:
+            # Konstruera kolumnnamnet dynamiskt
+            col_name = f"file_path_{mod}" 
+            
+            # Hämta path (använd .get för säkerhet om kolumnen saknas tillfälligt)
+            # Detta lägger till path eller NaN/None i listan
+            path = row.get(col_name, pd.NA)
+            paths_dict[mod].append(path)
+            # print(f"COL_NAME: {col_name}")
+            # print(f"PATH: {path}")
+
+    # 3. Konvertera listorna till numpy arrays och paketera i X_paths
+    X_paths = {mod: np.array(paths) for mod, paths in paths_dict.items()}
+    
+    return X_paths, np.array(labels)
 
 
-def shuffle_arrays(X, y, seed=42):
-    idx = np.arange(len(y))
+def shuffle_arrays(X_dict, y, seed=42):
+    """Shufflar alla modaliteter i synk med labels"""
+    # Ta längden från första modaliteten
+    n_samples = len(y)
+    idx = np.arange(n_samples)
     np.random.default_rng(seed).shuffle(idx)
-    return X[idx], y[idx]
+    
+    X_shuffled = {}
+    for mod, paths in X_dict.items():
+        X_shuffled[mod] = paths[idx]
+        
+    return X_shuffled, y[idx]
 
 
-def get_mri_brains_paths(
+def get_mm_paths(
         directory_dataframe,
-        preprocessed_root,
         dic_classes={"CN":0,"MCI":1,"AD":2},
         set_type='train',
         shuffle=True,
         n_fold=5,
         current_fold=1,
         test_split=0.2,
-        seed=42
+        seed=42,
+        modalities=["mri"]
     ):
     """
-    ADNI MRI split + k-fold på SUBJEKT-NIVÅ.
-    Garanterar att inget subjekt (patient) finns i både train, val och test.
+    Multimodal split på SUBJEKT-NIVÅ.
+    Garanterar att inget subjekt läcker mellan train/val/test.
     """
 
-    # --- 1. Identifiera unika subjekt och deras labels ---
-    # Vi utgår från att en patient har samma label (diagnosis) på alla sina bilder.
-    # Vi droppar dubbletter på ID för att få en lista med unika patienter att splitta.
+    # 1. Identifiera unika subjekt
     unique_subjects_df = directory_dataframe.drop_duplicates(subset=["individual_id"])
-    
     unique_subjects = unique_subjects_df["individual_id"].values
     unique_labels = unique_subjects_df["clinical_stage"].values
 
-    # --- 2. Split: Train+Val vs Test (på subjekt) ---
-    # Här delar vi patienterna, inte bilderna.
+    # 2. Split: Train+Val vs Test
     train_val_subj, test_subj, train_val_labels, _ = train_test_split(
         unique_subjects,
         unique_labels,
         test_size=test_split,
-        stratify=unique_labels,  # Håller klassbalansen jämn bland patienterna
+        stratify=unique_labels,
         random_state=seed,
         shuffle=True
     )
 
-    # --- 3. K-Fold Split: Train vs Val (på subjekt) ---
-    # Vi använder StratifiedKFold på de patienter som tilldelats Train+Val
+    # 3. K-Fold Split: Train vs Val
     skf = StratifiedKFold(n_splits=n_fold, shuffle=True, random_state=seed)
-    
-    # Generatorn ger index för train och val baserat på 'train_val_subj' listan
     split_generator = skf.split(train_val_subj, train_val_labels)
     
     train_idx, val_idx = None, None
-    # Loopa fram till rätt fold (current_fold är 1-indexerad)
     for i, (t_idx, v_idx) in enumerate(split_generator):
         if i == (current_fold - 1):
             train_idx = t_idx
@@ -115,56 +129,43 @@ def get_mri_brains_paths(
     if train_idx is None:
         raise ValueError(f"Invalid fold {current_fold} for n_fold={n_fold}")
 
-    # Nu har vi de faktiska patient-ID:na för varje set i denna fold
     final_train_subj = train_val_subj[train_idx]
     final_val_subj   = train_val_subj[val_idx]
 
-    # --- 4. Filtrera original-dataframen för att få alla bilder ---
-    # Nu hämtar vi alla rader (bilder) som tillhör de utvalda patienterna
+    # 4. Filtrera original-dataframen
     X_train_df = directory_dataframe[directory_dataframe["individual_id"].isin(final_train_subj)].reset_index(drop=True)
     X_val_df   = directory_dataframe[directory_dataframe["individual_id"].isin(final_val_subj)].reset_index(drop=True)
     X_test_df  = directory_dataframe[directory_dataframe["individual_id"].isin(test_subj)].reset_index(drop=True)
 
-    # --- 5. Bygg paths + labels (samma logik som förut) ---
-    X_train, y_train = build_preprocessed_paths(X_train_df, preprocessed_root, dic_classes)
-    X_val, y_val     = build_preprocessed_paths(X_val_df, preprocessed_root, dic_classes)
-    X_test, y_test   = build_preprocessed_paths(X_test_df, preprocessed_root, dic_classes)
+    # 5. Bygg paths dicts
+    X_train, y_train = build_preprocessed_paths(X_train_df, dic_classes, modalities)
+    X_val, y_val     = build_preprocessed_paths(X_val_df, dic_classes, modalities)
+    X_test, y_test   = build_preprocessed_paths(X_test_df, dic_classes, modalities)
 
-    # --- 6. Shuffle (blanda ordningen på bilderna inom seten) ---
+    # 6. Shuffle
     if shuffle:
         X_train, y_train = shuffle_arrays(X_train, y_train, seed)
         X_val, y_val     = shuffle_arrays(X_val,   y_val,   seed)
         X_test, y_test   = shuffle_arrays(X_test,  y_test,  seed)
 
-    # --- 7. Dataset info ---
+    # 7. Info
     info = {
-        "train_subjects": final_train_subj.tolist(),
-        "val_subjects":   final_val_subj.tolist(),
-        "test_subjects":  test_subj.tolist(),
-        "n_train": len(X_train),
-        "n_val": len(X_val),
-        "n_test": len(X_test),
+        "n_train": len(y_train),
+        "n_val": len(y_val),
+        "n_test": len(y_test),
     }
     
-    # Debug-utskrift om du vill se fördelningen
-    print(f"Fold {current_fold} stats:")
-    print(f"Train subjects: {len(final_train_subj)}, Images: {len(X_train)}")
-    print(f"Val subjects:   {len(final_val_subj)}, Images: {len(X_val)}")
-    print(f"Test subjects:  {len(test_subj)}, Images: {len(X_test)}")
+    print(f"Fold {current_fold} ({set_type}): {len(y_train)} train, {len(y_val)} val, {len(y_test)} test images.")
 
-    if set_type == "train":
-        return X_train, y_train, info
-    elif set_type == "val":
-        return X_val, y_val, info
-    elif set_type == "test":
-        return X_test, y_test, info
-
+    if set_type == "train": return X_train, y_train, info
+    elif set_type == "val": return X_val, y_val, info
+    elif set_type == "test": return X_test, y_test, info
+    
     return X_train, y_train, info
 
 
 class AugSupervisedDataset(torch.utils.data.Dataset):
-
-    def __init__(self, X_paths, y, dic_classes, transform=None):
+    def __init__(self, X_paths, y, dic_classes, img_shape, transform=None):
         self.X_paths = X_paths
         self.y = y
         self.transform = transform
@@ -172,104 +173,143 @@ class AugSupervisedDataset(torch.utils.data.Dataset):
         self.img_labels = y
         self.classes = list(dic_classes.keys())
         self.class_to_idx = dic_classes
-        # self.mask = mask
+        self.modalities = list(X_paths.keys())
+        self.img_shape = img_shape
 
     def __len__(self):
-        return len(self.X_paths)
+        return len(self.y)
+    
+    # --- FIX 1: Ta emot modalitetsnamn för att veta antal kanaler ---
+    def _get_empty_volume(self, modality):
+        # Hårdkodat baserat på dina behov: AMY=4, allt annat (MRI)=1
+        channels = 4 if modality == 'amy' else 1
+        return torch.zeros((channels, *self.img_shape), dtype=torch.float32)
+
+    def _load_volume(self, path, modality):
+        # Om path är NaN (saknas)
+        if pd.isna(path) or str(path).lower() == 'nan':
+            return self._get_empty_volume(modality), 0.0
+        
+        try:
+            vol = np.load(path).astype(np.float32)
+            
+            # --- FIX 2: Hantera dimensioner ---
+            if vol.ndim == 3:
+                # (D, H, W) -> (1, D, H, W)
+                vol = torch.from_numpy(vol).unsqueeze(0)
+            elif vol.ndim == 4:
+                # (D, H, W, C) -> (C, D, H, W)
+                vol = torch.from_numpy(vol).permute(3, 0, 1, 2)
+            else:
+                vol = torch.from_numpy(vol).unsqueeze(0)
+
+            return vol, 1.0 
+        except Exception as e:
+            print(f"Error loading {path}: {e}")
+            return self._get_empty_volume(modality), 0.0
 
     def __getitem__(self, idx):
-        path = self.X_paths[idx]
         label = int(self.y[idx])
+        out_dict = {}
+        masks = {}
 
-        # 1. Load .npy
-        volume = np.load(path).astype(np.float32)  # shape: (D, H, W)
-        
-        # # --- NYTT: Applicera mask innan transforms ---
-        # if self.mask is not None:
-        #     # Masken antas ha samma dimensioner som volume (raw data)
-        #     volume = volume * self.mask
-        # # ---------------------------------------------
+        for mod in self.modalities:
+            path = self.X_paths[mod][idx]
+            # Skicka med 'mod' så vi vet om det ska vara 1 eller 4 kanaler vid NaN
+            volume, mask = self._load_volume(path, mod)
+            
+            # Applicera transforms
+            if mask == 1.0 and self.transform:
+                volume = self.transform(volume)
+                mi, ma = volume.min(), volume.max()
+                if ma > mi:
+                    volume = (volume - mi) / (ma - mi)
+            
+            out_dict[mod] = volume
+            masks[mod] = torch.tensor([mask], dtype=torch.float32)
 
-        # 2. To tensor
-        volume = torch.from_numpy(volume).unsqueeze(0)  # shape: (1, D, H, W)
-
-        # 3. Apply transforms (MONAI Compose)
-        if self.transform:
-            volume = self.transform(volume)
-
-            # normalisera efter transform
-            mi = volume.min()
-            ma = volume.max()
-            if ma > mi:
-                volume = (volume - mi) / (ma - mi)
-
-        return volume, label
+        return out_dict, masks, label
 
 
 class TwoAugSelfSupervisedDataset(torch.utils.data.Dataset):
-
-    def __init__(self, X_paths, y, dic_classes, transform=None):
+    def __init__(self, X_paths, y, dic_classes, img_shape, transform=None):
         self.X_paths = X_paths
         self.y = y
-        self.transform1 = transform
-        self.transform2 = transform
         self.img_dir = X_paths
         self.img_labels = y
         self.classes = list(dic_classes.keys())
         self.class_to_idx = dic_classes
-        # self.mask = mask
+        self.transform = transform
+        self.modalities = list(X_paths.keys())
+        self.img_shape = img_shape
+        self.debug_counter = 0
 
     def __len__(self):
-        return len(self.X_paths)
+        return len(self.y)
+    
+    # --- FIX 1: Rätt kanaler vid tom data ---
+    def _get_empty_volume(self, modality):
+        channels = 4 if modality == 'amy' else 1
+        return torch.zeros((channels, *self.img_shape), dtype=torch.float32)
+
+    def _process_view(self, volume, is_present):
+        if is_present and self.transform:
+            vol = self.transform(volume)
+            mi, ma = vol.min(), vol.max()
+            if ma > mi:
+                vol = (vol - mi) / (ma - mi)
+            return vol
+        return volume
 
     def __getitem__(self, idx):
-        path = self.X_paths[idx]
         label = int(self.y[idx])
+        
+        view1_dict = {}
+        view2_dict = {}
+        masks = {}
 
-        # 1. Load .npy
-        volume = np.load(path).astype(np.float32)
+        for mod in self.modalities:
+            path = self.X_paths[mod][idx]
+            
+            # NaN Check
+            if pd.isna(path) or str(path).lower() == 'nan':
+                # FIX: Skicka med mod så vi får (4, D, H, W) för amy
+                raw_tensor = self._get_empty_volume(mod) 
+                is_present = False
+                mask_val = 0.0
+            else:
+                try:
+                    raw_vol = np.load(path).astype(np.float32)
+                    
+                    # FIX: Dimensioner
+                    if raw_vol.ndim == 3:
+                        raw_tensor = torch.from_numpy(raw_vol).unsqueeze(0)
+                    elif raw_vol.ndim == 4:
+                        raw_tensor = torch.from_numpy(raw_vol).permute(3, 0, 1, 2)
+                    else:
+                        raw_tensor = torch.from_numpy(raw_vol).unsqueeze(0)
+                    
+                    is_present = True
+                    mask_val = 1.0
+                except FileNotFoundError:
+                    print(f"[WARNING] File not found: {path}")
+                    raw_tensor = self._get_empty_volume(mod)
+                    is_present = False
+                    mask_val = 0.0
 
-        # # --- NYTT: Applicera mask ---
-        # if self.mask is not None:
-        #     volume = volume * self.mask
-        # # ----------------------------
+            view1_dict[mod] = self._process_view(raw_tensor, is_present)
+            
+            if is_present:
+                raw_tensor_clone = raw_tensor.clone()
+            else:
+                raw_tensor_clone = raw_tensor
+                
+            view2_dict[mod] = self._process_view(raw_tensor_clone, is_present)
+            masks[mod] = torch.tensor([mask_val], dtype=torch.float32)
 
-        # 2. To tensor
-        volume = torch.from_numpy(volume).unsqueeze(0)  # shape (1, D, H, W)
+        return view1_dict, view2_dict, masks, label
 
-        # 3. Augmentation 1
-        if self.transform1:
-            vol1 = self.transform1(volume)
-            mi = vol1.min()
-            ma = vol1.max()
-            if ma > mi:
-                vol1 = (vol1 - mi) / (ma - mi)
-        else:
-            vol1 = volume.clone()
-
-        # 4. Augmentation 2
-        if self.transform2:
-            vol2 = self.transform2(volume)
-            mi = vol2.min()
-            ma = vol2.max()
-            if ma > mi:
-                vol2 = (vol2 - mi) / (ma - mi)
-        else:
-            vol2 = volume.clone()
-
-        return vol1, vol2, label
-
-
-def create_datasets(
-        directory_dataframe: pd.DataFrame,
-        preprocessed_root: str,
-        transforms_dic: dict,
-        dic_classes = {"CN":0, "MCI":1, "AD":2},
-        n_fold = 5,
-        current_fold = 1,
-        test_split = 0.2,
-        seed = 42
-    ):
+def create_datasets(directory_dataframe, transforms_dic, dic_classes, n_fold, current_fold, test_split, seed, img_shape, modalities):
     """
     Skapar alla dataset:
         - trainset (self-supervised, 2 augment)
@@ -282,46 +322,22 @@ def create_datasets(
         - testset_projection
     """
 
-    X_train, y_train, info_train = get_mri_brains_paths(
-        directory_dataframe=directory_dataframe,
-        preprocessed_root=preprocessed_root,
-        dic_classes=dic_classes,
-        set_type="train",
-        shuffle=True,
-        n_fold=n_fold,
-        current_fold=current_fold,
-        test_split=test_split,
-        seed=seed
+    # Hämta paths för alla set
+    X_train, y_train, _ = get_mm_paths(
+        directory_dataframe, dic_classes, "train", True, n_fold, current_fold, test_split, seed, modalities
     )
-
-    X_val, y_val, info_val = get_mri_brains_paths(
-        directory_dataframe=directory_dataframe,
-        preprocessed_root=preprocessed_root,
-        dic_classes=dic_classes,
-        set_type="val",
-        shuffle=False,
-        n_fold=n_fold,
-        current_fold=current_fold,
-        test_split=test_split,
-        seed=seed
+    X_val, y_val, _ = get_mm_paths(
+        directory_dataframe, dic_classes, "val", False, n_fold, current_fold, test_split, seed, modalities
     )
-
-    X_test, y_test, info_test = get_mri_brains_paths(
-        directory_dataframe=directory_dataframe,
-        preprocessed_root=preprocessed_root,
-        dic_classes=dic_classes,
-        set_type="test",
-        shuffle=False,
-        n_fold=n_fold,
-        current_fold=current_fold,
-        test_split=test_split,
-        seed=seed
+    X_test, y_test, _ = get_mm_paths(
+        directory_dataframe, dic_classes, "test", False, n_fold, current_fold, test_split, seed, modalities
     )
 
     trainset = TwoAugSelfSupervisedDataset(
         X_paths=X_train,
         y=y_train,
         dic_classes=dic_classes,
+        img_shape=img_shape,
         transform=transforms_dic["train"]
     )
 
@@ -329,6 +345,7 @@ def create_datasets(
         X_paths=X_train,
         y=y_train,
         dic_classes=dic_classes,
+        img_shape=img_shape,
         transform=transforms_dic["train"]
     )
 
@@ -336,6 +353,7 @@ def create_datasets(
         X_paths=X_train,
         y=y_train,
         dic_classes=dic_classes,
+        img_shape=img_shape,
         transform=transforms_dic["train_noaug"]
     )
 
@@ -343,6 +361,7 @@ def create_datasets(
         X_paths=X_train,
         y=y_train,
         dic_classes=dic_classes,
+        img_shape=img_shape,
         transform=transforms_dic["train"]
     )
 
@@ -350,6 +369,7 @@ def create_datasets(
         X_paths=X_train,
         y=y_train,
         dic_classes=dic_classes,
+        img_shape=img_shape,
         transform=transforms_dic["project_noaug"]
     )
 
@@ -357,6 +377,7 @@ def create_datasets(
         X_paths=X_val,
         y=y_val,
         dic_classes=dic_classes,
+        img_shape=img_shape,
         transform=transforms_dic["val"]
     )
 
@@ -364,6 +385,7 @@ def create_datasets(
         X_paths=X_test,
         y=y_test,
         dic_classes=dic_classes,
+        img_shape=img_shape,
         transform=transforms_dic["test"]
     )
 
@@ -371,6 +393,7 @@ def create_datasets(
         X_paths=X_test,
         y=y_test,
         dic_classes=dic_classes,
+        img_shape=img_shape,
         transform=transforms_dic["test_projection"]
     )
 
@@ -396,7 +419,7 @@ def get_brains(
         current_fold = 1,
         test_split = 0.2,
         seed = 42,
-        mask = None):
+        modalities = ["mri"]):
     
     # Data augmentation (on-the-fly) parameters
     aug_prob = 0.5
@@ -414,41 +437,42 @@ def get_brains(
             RandGaussianNoise(std=rand_noise_std, prob=aug_prob),
             # Affine(translate_params=(rand_shift, rand_shift, rand_shift), image_only=True),
             # RandZoom(min_zoom=min_zoom, max_zoom=max_zoom, prob=aug_prob),
-            RepeatChannel(repeats=channels),
+            # RepeatChannel(repeats=channels),
         ]),
         'train_noaug': Compose([
             Resize(spatial_size = img_shape),
-            RepeatChannel(repeats=channels),
+            # RepeatChannel(repeats=channels),
         ]),
         'project_noaug': Compose([
             Resize(spatial_size = img_shape),
-            RepeatChannel(repeats=channels),
+            # RepeatChannel(repeats=channels),
         ]),
         'val': Compose([
             Resize(spatial_size = img_shape),
-            RepeatChannel(repeats=channels),
+            # RepeatChannel(repeats=channels),
         ]),
         'test': Compose([
             Resize(spatial_size = img_shape),
-            RepeatChannel(repeats=channels),
+            # RepeatChannel(repeats=channels),
         ]),
         'test_projection': Compose([
             Resize(spatial_size = img_shape),
-            RepeatChannel(repeats=channels),
+            # RepeatChannel(repeats=channels),
         ]),
     }
 
-    directory_dataframe = setup_npy_mri_dataframe(classes=dic_classes.keys(), adni_path=dataset_path)
+    mm_df = load_npy_dataset(adni_path=dataset_path, classes=dic_classes.keys(), modalities=modalities)
 
     return create_datasets(
-        directory_dataframe = directory_dataframe,
-        preprocessed_root = dataset_path,
+        directory_dataframe = mm_df,
         transforms_dic = transforms_dic,
         dic_classes = dic_classes,
         n_fold = n_fold,
         current_fold = current_fold,
         test_split = test_split,
-        seed = seed
+        seed = seed,
+        img_shape = img_shape,
+        modalities = modalities
     )
 
 
@@ -456,51 +480,50 @@ def get_data(args: argparse.Namespace):
 
     """ Load dataset based on the parsed arguments """
 
-    # # --- 1. Ladda masken ---
-    # mask_path = args.global_mask_path
-    # mask = None
-    
-    # if os.path.exists(mask_path):
-    #     print(f"[INFO] Loading global mask from {mask_path}")
-    #     mask = np.load(mask_path).astype(np.float32)
+    # 1. Ladda Master DataFrame (Multimodal)
+    mm_df = load_npy_dataset(adni_path=args.dataset_path, classes=list(args.dic_classes.keys()), modalities=args.modalities)
+
+    # 2. Check shapes dynamically
+    reference_shape = None
+
+    for mod in args.modalities:
+        col_name = f"file_path_{mod}"
         
-    #     # Säkerhetskontroll: Masken måste vara 1 där vi vill behålla data, 0 annars.
-    #     # Om den är bool (True/False), konvertera.
-    #     if mask.dtype == bool:
-    #         mask = mask.astype(np.float32)
-    # else:
-    #     print(f"[WARNING] No global mask found at {mask_path}. Training without mask.")
+        # Hämta första raden som faktiskt har en fil (inte NaN) för denna modalitet
+        # Detta är viktigt om datasetet är "sparse" (t.ex. rad 0 har MRI men saknar Amyloid)
+        valid_rows = mm_df[mm_df[col_name].notna()]
+        
+        if valid_rows.empty:
+            print(f"[WARNING] No valid files found for modality '{mod}' in the dataframe!", flush=True)
+            continue
+            
+        # Ta första giltiga path
+        sample_path = valid_rows.iloc[0][col_name]
+        
+        try:
+            vol = np.load(sample_path)
+            print(f"[INFO] {mod.upper()} Shape: {vol.shape}", flush=True)
+            
+            # Vi använder den första fungerande modaliteten vi hittar som "referens" för args.img_shape
+            if reference_shape is None:
+                reference_shape = vol.shape
+                
+        except Exception as e:
+            print(f"[ERROR] Failed to load sample for {mod} at {sample_path}: {e}", flush=True)
 
-    # -----------------------
+    if reference_shape is None:
+        raise ValueError("Could not determine image shape. Check paths and data availability.")
 
-    sample_df = setup_npy_mri_dataframe(
-        classes=args.dic_classes.keys(),
-        adni_path=args.dataset_path
-    )
-
-    sample_path = sample_df["file_path"].iloc[0]
-    sample_img = np.load(sample_path)  # shape: (D, H, W)
-
-    orig_slices, orig_rows, orig_cols = sample_img.shape
-
+    # Beräkna downscaling baserat på referens-formen
     ds = args.downscaling
+    orig_slices, orig_rows, orig_cols = reference_shape
+    
     args.slices = orig_slices // ds
     args.rows   = orig_rows   // ds
     args.cols   = orig_cols   // ds
     args.img_shape = (args.slices, args.rows, args.cols)
-
-    print(f"[INFO] Image shape detected from data: {sample_img.shape}")
-    print(f"[INFO] Using downscaled shape: {args.img_shape}")
-
-    # # Check dimensions
-    # sample_path = sample_df["file_path"].iloc[0]
-    # sample_img = np.load(sample_path)
-    # if mask is not None:
-    #     if mask.shape != sample_img.shape:
-    #         print(f"[ERROR] Mask shape {mask.shape} does not match image shape {sample_img.shape}")
-    #         # Här kan du välja att crasha eller försöka resizea masken.
-    #         # För säkerhets skull rekommenderar jag att du genererar masken på rätt data.
-    #         raise ValueError("Mask dimensions mismatch!")
+    
+    print(f"[INFO] Target Shape (downscaled by {ds}): {args.img_shape}", flush=True)
     
     torch.manual_seed(args.seed)
     random.seed(args.seed)
@@ -515,7 +538,8 @@ def get_data(args: argparse.Namespace):
         n_fold = args.n_fold,
         current_fold = args.current_fold,
         test_split = args.test_split,
-        seed = args.seed
+        seed = args.seed,
+        modalities = args.modalities
         )
 
     raise Exception(f'Could not load data set, data set "{args.dataset_path}" not found!')

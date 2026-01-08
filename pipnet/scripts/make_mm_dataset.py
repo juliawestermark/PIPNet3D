@@ -314,13 +314,21 @@ def get_baseline_class_for_subject(subject_id: str, dxsum: pd.DataFrame) -> str:
     
     return stage
 
-def load_npy_dataset(classes=["CN", "MCI", "AD"], adni_path="/home/maia-user/ADNI_npy"):
-    mode = "npy"
-    mri = load_mri_csv(mode, adni_path)
-    pet = load_pet_csv(mode, adni_path)
+def load_dataset(mode = "npy", classes=["CN", "MCI", "AD"], adni_path_mri="/home/maia-user/ADNI_npy", adni_path_pet="/home/maia-user/ADNI_npy", modalities=["mri", "amy"]):
+    # mode = "npy"
+    mri = load_mri_csv(mode, adni_path_mri)
+    pet = load_pet_csv(mode, adni_path_pet)
+    if mode == "nii":
+        DXSUM_PATH = os.path.join(adni_path_mri, "DXSUM_PDXCONV_ADNIALL.csv")
+    elif mode == "npy":
+        DXSUM_PATH = os.path.join(adni_path_mri, "csv", "DXSUM_PDXCONV_ADNIALL.csv")
+    else:
+        raise ValueError(f"mode {mode} not implemented.")
+    # mri = load_mri_csv(mode, adni_path)
+    # pet = load_pet_csv(mode, adni_path)
 
     # -- Prepare diagnosis summary --
-    DXSUM_PATH = os.path.join(adni_path, "csv", "DXSUM_PDXCONV_ADNIALL.csv")
+    # DXSUM_PATH = os.path.join(adni_path, "csv", "DXSUM_PDXCONV_ADNIALL.csv")
     csv_dxsum = pd.read_csv(DXSUM_PATH)
     dxsum = csv_dxsum[[
         "PTID",
@@ -347,10 +355,8 @@ def load_npy_dataset(classes=["CN", "MCI", "AD"], adni_path="/home/maia-user/ADN
         right_on="exam_date",
         direction="nearest",
         tolerance=pd.Timedelta("90D"),
-        suffixes=("_pet", "_mri")
+        suffixes=("_amy", "_mri")
     )
-    pet_to_mri["delta_days"] = (pet_to_mri["exam_date_pet"] - pet_to_mri["exam_date_mri"]).abs().dt.days
-
     # 2️⃣ MRI → närmaste PET
     mri_to_pet = pd.merge_asof(
         mri.sort_values("exam_date"), pet.sort_values("exam_date"),
@@ -359,29 +365,25 @@ def load_npy_dataset(classes=["CN", "MCI", "AD"], adni_path="/home/maia-user/ADN
         right_on="exam_date",
         direction="nearest",
         tolerance=pd.Timedelta("90D"),
-        suffixes=("_mri", "_pet")
+        suffixes=("_mri", "_amy")
     )
-    mri_to_pet["delta_days"] = (mri_to_pet["exam_date_mri"] - mri_to_pet["exam_date_pet"]).abs().dt.days
-
     # 3️⃣ Kombinera ömsesidiga par
     mutual = pd.merge(
-        pet_to_mri[["individual_id", "exam_id_pet", "exam_id_mri", "file_path_pet", "file_path_mri", "delta_days"]],
-        mri_to_pet[["individual_id", "exam_id_pet", "exam_id_mri"]],
-        on=["individual_id", "exam_id_pet", "exam_id_mri"]
+        pet_to_mri[["individual_id", "exam_id_amy", "exam_id_mri", "file_path_amy", "file_path_mri", "exam_date"]],
+        mri_to_pet[["individual_id", "exam_id_amy", "exam_id_mri"]],
+        on=["individual_id", "exam_id_amy", "exam_id_mri"]
     )
 
     # 4️⃣ Lägg till icke-matchade rader för att behålla alla undersökningar
     unmatched_pet = pet_to_mri[pet_to_mri["file_path_mri"].isna()]
-    unmatched_mri = mri_to_pet[mri_to_pet["file_path_pet"].isna()]
+    unmatched_mri = mri_to_pet[mri_to_pet["file_path_amy"].isna()]
     combined = pd.concat([mutual, unmatched_pet, unmatched_mri], ignore_index=True)
     
     # -- Add baseline info --
     combined["baseline_date"] = combined["individual_id"].apply(get_baseline_date_for_subject, args=(dxsum,))
     combined["baseline_class"] = combined["individual_id"].apply(get_baseline_class_for_subject, args=(dxsum,))
-    # combined["months_from_baseline"] = combined["time_point"].apply(get_months_from_baseline)
-    # combined["est_exam_date"] = combined.apply(get_session_date, axis=1)
 
-    combined["anchor_date"] = combined["exam_date_mri"].fillna(combined["exam_date_pet"])
+    combined["anchor_date"] = combined["exam_date"]
 
     # -- Merge combined with diagnosis info --
     matched = pd.merge_asof(
@@ -396,21 +398,51 @@ def load_npy_dataset(classes=["CN", "MCI", "AD"], adni_path="/home/maia-user/ADN
 
     combined_merged = matched[[
         "exam_id_mri", 
-        "exam_id_pet", 
+        "exam_id_amy", 
         "individual_id", 
         "EXAMDATE",
         "baseline_class",
         "baseline_date",
         "clinical_stage",
         "file_path_mri",
-        "file_path_pet",
+        "file_path_amy",
     ]].rename(columns={
         "EXAMDATE": "exam_date"
     })
     combined_merged = combined_merged[combined_merged["clinical_stage"].isin(classes)].reset_index(drop=True)
 
+    # --- NY DYNAMISK FILTRERING ---
+    
+    # Skapa kolumnnamn baserat på input-listan: "file_path_mri", "file_path_amy" etc.
+    cols_to_check = [f"file_path_{mod}" for mod in modalities]
+    
+    # Säkerhetssteg: Kolla att kolumnerna faktiskt finns i dataframen
+    # Detta förhindrar krasch om du skickar in ["tau"] men datan inte är mergad än.
+    valid_cols = [c for c in cols_to_check if c in combined_merged.columns]
+
+    # Varna om vi saknar någon kolumn vi förväntade oss
+    if len(valid_cols) < len(cols_to_check):
+        missing = set(cols_to_check) - set(valid_cols)
+        print(f"[WARN] Requested filtering on {missing}, but these columns are not in the dataframe.")
+
+    if valid_cols:
+        print(f"[INFO] Filtering dataset based on modalities: {modalities}")
+        print(f"      Checking columns: {valid_cols}")
+        print(f"      Rows before filter: {len(combined_merged)}")
+        
+        # how='all' -> Raden tas bort ENDAST om ALLA valida kolumner är NaN.
+        combined_merged = combined_merged.dropna(subset=valid_cols, how='all').reset_index(drop=True)
+        
+        print(f"      Rows after filter:  {len(combined_merged)}")
+    else:
+        print(f"[WARN] No valid columns found corresponding to {modalities}. Returning full dataset.")
+    # ------------------------------
+
     return combined_merged
 
 
-
+def load_npy_dataset(classes=["CN", "MCI", "AD"], adni_path="/home/maia-user/ADNI_npy", modalities=["mri", "amy"]):
+    mode = "npy"
+    df = load_dataset(mode="npy", classes=classes, adni_path_mri=adni_path, adni_path_pet=adni_path, modalities=modalities)
+    return df
 

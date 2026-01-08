@@ -1,7 +1,7 @@
 #!/bin/bash
 # SLURM batch job script for Berzelius
 
-#SBATCH -A Berzelius-2025-212
+#SBATCH -A Berzelius-2025-422
 #SBATCH --gpus=1
 #SBATCH -t 00-02:00:00
 #SBATCH -C thin
