@@ -33,13 +33,13 @@ def get_args(
     net_dic = {"resnet3D_18_kin400":3, "convnext3D_tiny":1}
     # dic_classes = {"CN":0, "AD":1} # {"CN":0, "MCI": 1, "AD":2}
     dic_classes = {"CN":0, "MCI": 1, "AD":2}
-    # modalities = ['mri']
-    modalities = ['mri', 'amy']
+    modalities = ['mri']
+    # modalities = ['mri', 'amy']
 
-    root_folder = "/home/maia-user/PIPNet3D/"
-    #root_folder = "/proj/berzbiomedicalimagingkth/users/x_julwe/PIPNet3D/"
-    dataset_path = "/home/maia-user/ADNI_npy"
-    #dataset_path = "/proj/berzbiomedicalimagingkth/users/x_julwe/ADNI_npy"
+    #root_folder = "/home/maia-user/PIPNet3D/"
+    root_folder = "/proj/berzbiomedicalimagingkth/users/x_julwe/PIPNet3D/"
+    #dataset_path = "/home/maia-user/ADNI_npy"
+    dataset_path = "/proj/berzbiomedicalimagingkth/users/x_julwe/ADNI_npy"
     
     metadata_path = root_folder
     model_path = os.path.join(root_folder, "pipnet", "models")
@@ -67,10 +67,10 @@ def get_args(
     task_performed_name = f"{task_performed}_{model_name}"
     experiment_folder = os.path.join(root_folder, "results", task_performed_name, net, "fold_" + str(current_fold))
     
-    batch_size_pretrain = 2 #16
-    batch_size = 2 #16
-    epochs_pretrain = 1 #10
-    epochs = 2 #60
+    batch_size_pretrain = 16 #16 # 2
+    batch_size = 16 #16 # 2
+    epochs_pretrain = 5 #10 # 1
+    epochs = 10 #60 # 2
     optimizer = "Adam"
     lr = 0.05
     lr_age = 0.1
@@ -78,7 +78,7 @@ def get_args(
     lr_net = 0.0001 #0.0005
     weight_decay = 0.1 #0.0
     num_features = 0
-    freeze_epochs = 1 #10
+    freeze_epochs = 5 #10 # 1
     gamma = 0.1             # LR's decay factor
     step_size = 7           # LR's frequency decay
     num_workers = 8

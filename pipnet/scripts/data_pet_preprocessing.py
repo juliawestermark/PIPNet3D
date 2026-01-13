@@ -106,10 +106,10 @@ if __name__ == "__main__":
     print("Start time:", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     
     # Paths
-    ADNI_PATH = "/home/maia-user/ADNI_PET/ADNI"
-    OUTPUT_ROOT = "/home/maia-user/ADNI_npy"
-    #ADNI_PATH = "/proj/berzbiomedicalimagingkth/users/x_julwe/ADNI/ADNI_PET"
-    #OUTPUT_ROOT = "/proj/berzbiomedicalimagingkth/users/x_julwe/ADNI_npy"
+    #ADNI_PATH = "/home/maia-user/ADNI_PET/ADNI"
+    #OUTPUT_ROOT = "/home/maia-user/ADNI_npy"
+    ADNI_PATH = "/proj/berzbiomedicalimagingkth/users/x_julwe/ADNI/AMY"
+    OUTPUT_ROOT = "/proj/berzbiomedicalimagingkth/users/x_julwe/ADNI_npy"
 
     amy_file_name = "UCBERKELEY_AMY_6MM_02Apr2025.csv"
     pet_type = "amy"
