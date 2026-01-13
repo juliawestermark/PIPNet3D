@@ -122,6 +122,10 @@ def load_mri_csv(mode="npy", adni_path="/home/maia-user/ADNI_npy"):
     else:
         raise ValueError(f"mode {mode} is not implemented.")
     
+    if not os.path.exists(COLLECTION_PATH) or not os.path.exists(DXSUM_PATH):
+        print(f"[WARN] MRI CSV files not found at {COLLECTION_PATH}. Returning empty DataFrame.")
+        return pd.DataFrame(columns=expected_cols)
+    
     # -- Load csv --
     csv_output_collection = pd.read_csv(COLLECTION_PATH)
     csv_dxsum = pd.read_csv(DXSUM_PATH)
@@ -141,6 +145,11 @@ def load_mri_csv(mode="npy", adni_path="/home/maia-user/ADNI_npy"):
 
     # -- Prepare mri dataset --
     mri = csv_output_collection[csv_output_collection["included"]].copy()
+
+    if mri.empty:
+        print(f"[WARN] No valid MRI images found on disk. Returning empty DataFrame to avoid crash.")
+        return pd.DataFrame(columns=expected_cols)
+
     mri = mri[[
         "Output collection GUID", 
         "Individual's ID", 
