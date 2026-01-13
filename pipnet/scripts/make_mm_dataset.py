@@ -113,7 +113,7 @@ def get_session_date(row: pd.Series) -> pd.Timestamp:
 def load_mri_csv(mode="npy", adni_path="/home/maia-user/ADNI_npy"):
 
     expected_cols = ["exam_id", "individual_id", "time_point", "file_path", "baseline_date", "months_from_baseline", "exam_date"]
-    
+
     if mode == "nii":
         DATA_PATH = os.path.join(adni_path, "adni")
         COLLECTION_PATH = os.path.join(adni_path, "OutputCollection.csv")
@@ -327,39 +327,62 @@ def get_baseline_class_for_subject(subject_id: str, dxsum: pd.DataFrame) -> str:
     return stage
 
 def load_dataset(mode = "npy", classes=["CN", "MCI", "AD"], adni_path_mri="/home/maia-user/ADNI_npy", adni_path_pet="/home/maia-user/ADNI_npy", modalities=["mri", "amy"]):
-    # mode = "npy"
+    
+    # Load modalities
     mri = load_mri_csv(mode, adni_path_mri)
     pet = load_pet_csv(mode, adni_path_pet)
+
     if mode == "nii":
         DXSUM_PATH = os.path.join(adni_path_mri, "DXSUM_PDXCONV_ADNIALL.csv")
     elif mode == "npy":
         DXSUM_PATH = os.path.join(adni_path_mri, "csv", "DXSUM_PDXCONV_ADNIALL.csv")
     else:
         raise ValueError(f"mode {mode} not implemented.")
-    # mri = load_mri_csv(mode, adni_path)
-    # pet = load_pet_csv(mode, adni_path)
 
     # -- Prepare diagnosis summary --
-    # DXSUM_PATH = os.path.join(adni_path, "csv", "DXSUM_PDXCONV_ADNIALL.csv")
-    csv_dxsum = pd.read_csv(DXSUM_PATH)
-    dxsum = csv_dxsum[[
-        "PTID",
-        "EXAMDATE",
-        "USERDATE",
-        "VISCODE", 
-        "VISCODE2",
-        "DXCURREN",
-        "DXCHANGE",
-        "DIAGNOSIS"
-    ]].rename(columns={
-        "PTID": "individual_id",
-    })
-    dxsum["EXAMDATE"] = dxsum["EXAMDATE"].fillna(dxsum["USERDATE"])
-    dxsum["EXAMDATE"] = pd.to_datetime(dxsum["EXAMDATE"], errors='coerce')
-    dxsum["clinical_stage"] = dxsum.apply(determine_clinical_stage, axis=1)
-    dxsum = dxsum.dropna(subset=["clinical_stage"])
+    if not os.path.exists(DXSUM_PATH):
+        # Fallback om filen saknas, skapa tom DF med rätt kolumner för att inte krascha senare
+        print(f"[WARN] DXSUM file not found at {DXSUM_PATH}. Creating dummy diagnosis dataframe.")
+        dxsum = pd.DataFrame(columns=["PTID", "EXAMDATE", "USERDATE", "VISCODE", "VISCODE2", "DXCURREN", "DXCHANGE", "DIAGNOSIS"])
+        dxsum["clinical_stage"] = []
+    else:
+        csv_dxsum = pd.read_csv(DXSUM_PATH)
+        dxsum = csv_dxsum[[
+            "PTID",
+            "EXAMDATE",
+            "USERDATE",
+            "VISCODE", 
+            "VISCODE2",
+            "DXCURREN",
+            "DXCHANGE",
+            "DIAGNOSIS"
+        ]].rename(columns={
+            "PTID": "individual_id",
+        })
+        dxsum["EXAMDATE"] = dxsum["EXAMDATE"].fillna(dxsum["USERDATE"])
+        dxsum["EXAMDATE"] = pd.to_datetime(dxsum["EXAMDATE"], errors='coerce')
+        dxsum["clinical_stage"] = dxsum.apply(determine_clinical_stage, axis=1)
+        dxsum = dxsum.dropna(subset=["clinical_stage"])
+
+    # --- HÄR ÄR FIXEN: Tvinga datatyperna även om tabellerna är tomma ---
+    
+    # 1. Konvertera till datetime (pd.to_datetime hanterar tomma serier korrekt)
+    mri["exam_date"] = pd.to_datetime(mri["exam_date"])
+    pet["exam_date"] = pd.to_datetime(pet["exam_date"])
+
+    # 2. Om de fortfarande är tomma kan dtypen ha fastnat som 'object'. Tvinga cast.
+    if mri.empty:
+        mri["exam_date"] = mri["exam_date"].astype("datetime64[ns]")
+    if pet.empty:
+        pet["exam_date"] = pet["exam_date"].astype("datetime64[ns]")
+
+    # Samma sak för ID-kolumnerna för att undvika merge-fel om en är int och en är string
+    mri["individual_id"] = mri["individual_id"].astype(str)
+    pet["individual_id"] = pet["individual_id"].astype(str)
+    # -------------------------------------------------------------------
 
     # 1️⃣ PET → närmaste MRI
+    # (Nu kommer detta fungera eftersom båda exam_date är datetime64[ns], även om mri är tom)
     pet_to_mri = pd.merge_asof(
         pet.sort_values("exam_date"), mri.sort_values("exam_date"),
         by="individual_id",
@@ -369,6 +392,7 @@ def load_dataset(mode = "npy", classes=["CN", "MCI", "AD"], adni_path_mri="/home
         tolerance=pd.Timedelta("90D"),
         suffixes=("_amy", "_mri")
     )
+    
     # 2️⃣ MRI → närmaste PET
     mri_to_pet = pd.merge_asof(
         mri.sort_values("exam_date"), pet.sort_values("exam_date"),
@@ -379,18 +403,38 @@ def load_dataset(mode = "npy", classes=["CN", "MCI", "AD"], adni_path_mri="/home
         tolerance=pd.Timedelta("90D"),
         suffixes=("_mri", "_amy")
     )
+    
+    # Säkra att kolumnerna finns
+    required_cols_mutual = ["individual_id", "exam_id_amy", "exam_id_mri"]
+    for col in required_cols_mutual:
+        if col not in pet_to_mri.columns: pet_to_mri[col] = pd.NA
+        if col not in mri_to_pet.columns: mri_to_pet[col] = pd.NA
+
     # 3️⃣ Kombinera ömsesidiga par
+    # Om mri är tom blir 'mutual' också tom, vilket är helt okej.
     mutual = pd.merge(
         pet_to_mri[["individual_id", "exam_id_amy", "exam_id_mri", "file_path_amy", "file_path_mri", "exam_date"]],
         mri_to_pet[["individual_id", "exam_id_amy", "exam_id_mri"]],
         on=["individual_id", "exam_id_amy", "exam_id_mri"]
     )
 
-    # 4️⃣ Lägg till icke-matchade rader för att behålla alla undersökningar
-    unmatched_pet = pet_to_mri[pet_to_mri["file_path_mri"].isna()]
-    unmatched_mri = mri_to_pet[mri_to_pet["file_path_amy"].isna()]
+    # 4️⃣ Hantera unmatched
+    if "file_path_mri" in pet_to_mri.columns:
+        unmatched_pet = pet_to_mri[pet_to_mri["file_path_mri"].isna()]
+    else:
+        unmatched_pet = pet_to_mri 
+
+    if "file_path_amy" in mri_to_pet.columns:
+        unmatched_mri = mri_to_pet[mri_to_pet["file_path_amy"].isna()]
+    else:
+        unmatched_mri = mri_to_pet
+
     combined = pd.concat([mutual, unmatched_pet, unmatched_mri], ignore_index=True)
     
+    if combined.empty:
+        print("[WARN] Resulting dataset is empty after merging MRI and PET.")
+        return pd.DataFrame() # Returnera tom, men koden kraschar inte
+
     # -- Add baseline info --
     combined["baseline_date"] = combined["individual_id"].apply(get_baseline_date_for_subject, args=(dxsum,))
     combined["baseline_class"] = combined["individual_id"].apply(get_baseline_class_for_subject, args=(dxsum,))
@@ -398,15 +442,20 @@ def load_dataset(mode = "npy", classes=["CN", "MCI", "AD"], adni_path_mri="/home
     combined["anchor_date"] = combined["exam_date"]
 
     # -- Merge combined with diagnosis info --
-    matched = pd.merge_asof(
-        combined.sort_values("anchor_date"),
-        dxsum[["individual_id", "EXAMDATE", "VISCODE2", "clinical_stage"]]
-            .sort_values("EXAMDATE"),
-        by="individual_id",
-        left_on="anchor_date",
-        right_on="EXAMDATE",
-        direction="nearest"
-    ).dropna(subset=["clinical_stage"])
+    if dxsum.empty:
+        # Om vi inte har diagnos-data, returnera det vi har (men det blir nog tomt på clinical_stage)
+        matched = combined
+        matched["clinical_stage"] = pd.NA
+    else:
+        matched = pd.merge_asof(
+            combined.sort_values("anchor_date"),
+            dxsum[["individual_id", "EXAMDATE", "VISCODE2", "clinical_stage"]]
+                .sort_values("EXAMDATE"),
+            by="individual_id",
+            left_on="anchor_date",
+            right_on="EXAMDATE",
+            direction="nearest"
+        ).dropna(subset=["clinical_stage"])
 
     combined_merged = matched[[
         "exam_id_mri", 
@@ -423,32 +472,15 @@ def load_dataset(mode = "npy", classes=["CN", "MCI", "AD"], adni_path_mri="/home
     })
     combined_merged = combined_merged[combined_merged["clinical_stage"].isin(classes)].reset_index(drop=True)
 
-    # --- NY DYNAMISK FILTRERING ---
-    
-    # Skapa kolumnnamn baserat på input-listan: "file_path_mri", "file_path_amy" etc.
+    # --- DYNAMISK FILTRERING ---
     cols_to_check = [f"file_path_{mod}" for mod in modalities]
-    
-    # Säkerhetssteg: Kolla att kolumnerna faktiskt finns i dataframen
-    # Detta förhindrar krasch om du skickar in ["tau"] men datan inte är mergad än.
     valid_cols = [c for c in cols_to_check if c in combined_merged.columns]
-
-    # Varna om vi saknar någon kolumn vi förväntade oss
-    if len(valid_cols) < len(cols_to_check):
-        missing = set(cols_to_check) - set(valid_cols)
-        print(f"[WARN] Requested filtering on {missing}, but these columns are not in the dataframe.")
 
     if valid_cols:
         print(f"[INFO] Filtering dataset based on modalities: {modalities}")
-        print(f"      Checking columns: {valid_cols}")
-        print(f"      Rows before filter: {len(combined_merged)}")
-        
-        # how='all' -> Raden tas bort ENDAST om ALLA valida kolumner är NaN.
         combined_merged = combined_merged.dropna(subset=valid_cols, how='all').reset_index(drop=True)
-        
-        print(f"      Rows after filter:  {len(combined_merged)}")
     else:
-        print(f"[WARN] No valid columns found corresponding to {modalities}. Returning full dataset.")
-    # ------------------------------
+        print(f"[WARN] No valid columns found corresponding to {modalities}. Returning full (likely empty) dataset.")
 
     return combined_merged
 
