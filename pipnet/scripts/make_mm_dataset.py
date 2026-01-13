@@ -111,6 +111,9 @@ def get_session_date(row: pd.Series) -> pd.Timestamp:
         return pd.NA
 
 def load_mri_csv(mode="npy", adni_path="/home/maia-user/ADNI_npy"):
+
+    expected_cols = ["exam_id", "individual_id", "time_point", "file_path", "baseline_date", "months_from_baseline", "exam_date"]
+    
     if mode == "nii":
         DATA_PATH = os.path.join(adni_path, "adni")
         COLLECTION_PATH = os.path.join(adni_path, "OutputCollection.csv")
