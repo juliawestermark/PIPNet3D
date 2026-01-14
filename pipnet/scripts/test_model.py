@@ -25,24 +25,24 @@ from utils import topk_accuracy
 from vis_pipnet import get_patch_size, get_img_coordinates, plot_local_explanation
 from plot_utils import plot_3d_slices, plot_rgb_slices, generate_rgb_array
 
-    
+
 
 @torch.no_grad()
 def eval_pipnet(
         net,
-        test_loader: DataLoader,
+        test_loader,
         epoch,
         device,
-        log: Log = None,  
-        progress_prefix: str = 'Eval Epoch'
+        log = None,  
+        progress_prefix: str = 'Eval Epoch',
+        modality_ranges: dict = None 
         ) -> dict:
     
     net = net.to(device)
-    # Make sure the model is in evaluation mode
     net.eval()
-    # Keep an info dict about the procedure
     info = dict()
-    # Build a confusion matrix
+    
+    # Initiera matriser
     cm = np.zeros((net.module._num_classes, net.module._num_classes), dtype = int)
 
     global_top1acc = 0.
@@ -50,30 +50,42 @@ def eval_pipnet(
     global_sim_anz = 0.
     global_anz = 0.
     local_size_total = 0.
+    local_size_total_sum_of_mod = 0.
     y_trues = []
     y_preds = []
     y_preds_classes = []
     abstained = 0
     
-    # Show progress on progress bar
+    # --- FÖRBEREDELSE FÖR JÄMFÖRBARHET ---
+    # Skapa en mask över vilka prototyper som är "levande" (har vikt > 1e-3).
+    # Detta gör att vi inte räknar prototyper som nollats ut (sparsity).
+    # Shape: [Total_Num_Prototypes] -> [1, 0, 1, 1, ...]
+    cls_weights = net.module._classification.weight
+    proto_is_globally_active = torch.gt(torch.abs(cls_weights), 1e-3).any(dim=0).float().to(device)
+    # -------------------------------------
+
+    # Initiera statistik för modaliteter
+    modality_stats = {}
+    if modality_ranges:
+        for mod in modality_ranges.keys():
+            modality_stats[mod] = {'active_protos': 0., 'valid_samples': 0.}
+    
     test_iter = tqdm(enumerate(test_loader), total=len(test_loader), desc=progress_prefix+' %s'%epoch, mininterval=5., ncols=0)
     
-    # Iterate through the test set
     for i, (xs, ms, ys) in test_iter:
         
-        # Move inputs to device. xs and ms are dictionaries of tensors.
         ys = ys.to(device)
         xs = {k: v.to(device) for k, v in xs.items()}
-        ms = {k: v.to(device) for k, v in ms.items()} if ms is not None else None
+        ms_device = {k: v.to(device) for k, v in ms.items()} if ms is not None else None
         
         with torch.no_grad():
-
-            # Use the model to classify this batch of input data
-            _, pooled, out = net(xs, masks=ms, inference = True)
+            _, pooled, out = net(xs, masks=ms_device, inference = True)
             
-            max_out_score, ys_pred = torch.max(out, dim=1) # max, max_idx
-            ys_pred_scores = torch.amax(F.softmax((torch.log1p(out**net.module._classification.normalization_multiplier)), dim = 1), dim = 1) # class confidence scores
+            # 1. Hämta prediktioner
+            max_out_score, ys_pred = torch.max(out, dim=1)
+            ys_pred_scores = torch.amax(F.softmax((torch.log1p(out**net.module._classification.normalization_multiplier)), dim = 1), dim = 1) 
             abstained += (max_out_score.shape[0] - torch.count_nonzero(max_out_score))  
+
             repeated_weight = net.module._classification.weight.unsqueeze(1).repeat(1, pooled.shape[0], 1)
             sim_scores_anz = torch.count_nonzero(torch.gt(torch.abs(pooled*repeated_weight), 1e-3).float(), dim = 2).float()
             local_size = torch.count_nonzero(torch.gt(torch.relu((pooled*repeated_weight) - 1e-3).sum(dim = 1), 0.).float(), dim = 1).float()
@@ -82,86 +94,134 @@ def eval_pipnet(
             global_sim_anz += correct_class_sim_scores_anz.sum().item()
             almost_nz = torch.count_nonzero(torch.gt(torch.abs(pooled), 1e-3).float(), dim = 1).float()
             global_anz += almost_nz.sum().item()
-            # Update the confusion matrix
-            cm_batch = np.zeros((net.module._num_classes, net.module._num_classes), dtype = int)
+            # 2. Förbered beräkning av Local Size (LS)
+            # Vi baserar ALLT på vikterna för den klass som faktiskt valdes.
+            # Detta är "True Explanation": Varför valde du AD? Jo, pga dessa features.
+            weights_for_pred = net.module._classification.weight[ys_pred] # [Batch, Total_Protos]
+            all_contributions = pooled * weights_for_pred # [Batch, Total_Protos]
             
+            # Mask: Vilka prototyper bidrog mer än tröskelvärdet?
+            is_relevant_global = torch.gt(torch.abs(all_contributions), 1e-3).float()
+
+            # Variabel för att hålla koll på Global LS för denna batch
+            # Vi nollställer den och bygger upp den via modaliteterna för maximal kontroll
+            batch_ls_global = torch.zeros(pooled.shape[0]).to(device)
+
+            # --- LOOPA ÖVER MODALITETER ---
+            if modality_ranges:
+                for mod, (start, end) in modality_ranges.items():
+                    # A. Missing Data Mask
+                    if ms_device is not None and mod in ms_device:
+                        # --- FIX: .squeeze() eller .view(-1) för att garantera 1D-vektor [Batch] ---
+                        current_mask = ms_device[mod].view(-1)
+                    else:
+                        current_mask = torch.ones(pooled.shape[0]).to(device)
+                    
+                    modality_stats[mod]['valid_samples'] += current_mask.sum().item()
+
+                    # B. Hämta relevanta prototyper för just denna modalitet
+                    # is_relevant_global är [Batch, Total_Protos]
+                    is_relevant_mod = is_relevant_global[:, start:end]
+                    
+                    # C. Räkna antal per bild. Resultat blir [Batch]
+                    ls_per_image_mod = torch.count_nonzero(is_relevant_mod, dim=1).float()
+                    
+                    # D. Nolla ut om modaliteten saknas
+                    # Nu är båda [Batch], så resultatet förblir [Batch]
+                    ls_per_image_mod = ls_per_image_mod * current_mask
+                    
+                    # E. Spara till modalitets-statistik
+                    modality_stats[mod]['active_protos'] += ls_per_image_mod.sum().item()
+                    
+                    # F. Lägg till i den globala summan för batchen
+                    batch_ls_global += ls_per_image_mod
+
+            # 3. Uppdatera den globala räknaren med summan
+            local_size_total_sum_of_mod += batch_ls_global.sum().item()
+            # Update confusion matrix & preds
+            cm_batch = np.zeros((net.module._num_classes, net.module._num_classes), dtype = int)
             for y_pred, y_true in zip(ys_pred, ys):
-                
                 cm[y_true][y_pred] += 1
                 cm_batch[y_true][y_pred] += 1
-                
-            acc = acc_from_cm(cm_batch)   
+
+            acc = acc_from_cm(cm_batch)
 
             (top1accs, top3accs) = topk_accuracy(out, ys, topk=[1,3])
-            
             global_top1acc += torch.sum(top1accs).item()
             global_top3acc += torch.sum(top3accs).item()
+
             y_preds += ys_pred_scores.detach().tolist()     # predicted class' confidence scores
             y_trues += ys.detach().tolist()
             y_preds_classes += ys_pred.detach().tolist()    # predicted classes
         
-        del out
-        del pooled
-        del ys_pred
-        
+        del out, pooled, ys_pred
+
     print("PIP-Net abstained from a decision for", abstained.item(), "images", flush = True)     
-       
+    
+    # --- Resultatsammanställning ---
     info['num non-zero prototypes'] = torch.gt(net.module._classification.weight, 1e-3).any(dim = 0).sum().item()
+    
+    if modality_ranges:
+        for mod, (start, end) in modality_ranges.items():
+            # Hämta vikterna för denna modalitet
+            w_mod = cls_weights[:, start:end]
+
+            # A. Global Non-Zero (Vokabulär - Antal unika prototyper som används)
+            # (Detta hade du redan)
+            count_nz = torch.gt(w_mod, 1e-3).any(dim=0).sum().item()
+            info[f'num_non_zero_prototypes_{mod}'] = count_nz
+            
+            # --- NYTT: Sparsity per modalitet ---
+            # Vi räknar alla kopplingar i w_mod matrisen
+            total_params_mod = torch.numel(w_mod)
+            active_params_mod = torch.count_nonzero(torch.nn.functional.relu(w_mod - 1e-3)).item()
+            
+            if total_params_mod > 0:
+                info[f'sparsity_{mod}'] = (total_params_mod - active_params_mod) / total_params_mod
+            else:
+                info[f'sparsity_{mod}'] = 0.0
+            # -----------------------------------
+
+            # B. Local Size (Genomsnittligt antal RELEVANTA per bild)
+            total_active = modality_stats[mod]['active_protos']
+            total_valid = modality_stats[mod]['valid_samples']
+            
+            if total_valid > 0:
+                info[f'local_size_{mod}'] = total_active / total_valid
+            else:
+                info[f'local_size_{mod}'] = 0.0
+
+    # Övriga metrics
     info['confusion_matrix'] = cm
     info['test_accuracy'] = acc_from_cm(cm)
-    info['top1_accuracy'] = global_top1acc/len(test_loader.dataset)
-    info['top3_accuracy'] = global_top3acc/len(test_loader.dataset)
+    info['top1_accuracy'] = global_top1acc/len(test_loader.dataset) if len(test_loader.dataset) > 0 else 0
+    info['top3_accuracy'] = global_top3acc/len(test_loader.dataset) if len(test_loader.dataset) > 0 else 0
     info['almost_sim_nonzeros'] = global_sim_anz/len(test_loader.dataset)
     info['local_size_all_classes'] = local_size_total/len(test_loader.dataset)
-    info['almost_nonzeros'] = global_anz/len(test_loader.dataset)
-    # f1 = 'binary' if net.module._num_classes == 2 else 'weighted'
-    # info["f1"] = f1_score(y_trues, y_preds_classes, average=f1)
+    info['local_size_sum_of_mod'] = local_size_total_sum_of_mod/len(test_loader.dataset)
+    info['almost_nonzeros'] = global_anz/len(test_loader.dataset) # OBS: Detta är RAW detections (utan vikt-filter)
+    
     f1_avg = 'binary' if net.module._num_classes == 2 else 'macro'
     info["f1"] = f1_score(y_trues, y_preds_classes, average=f1_avg)
-    info["sparsity"] = (torch.numel(net.module._classification.weight) - torch.count_nonzero(torch.nn.functional.relu(net.module._classification.weight-1e-3)).item()) / torch.numel(net.module._classification.weight)
+    
+    # Sparsity
+    total_params = torch.numel(net.module._classification.weight)
+    active_params = torch.count_nonzero(torch.nn.functional.relu(net.module._classification.weight-1e-3)).item()
+    info["sparsity"] = (total_params - active_params) / total_params
     info["balanced_accuracy"] = balanced_accuracy_score(y_trues, y_preds_classes)
 
-    # --- HÄR BÖRJAR DEN NYA LOGIKEN FÖR KLASS-SPECIFIKA MÅTT ---
-    
-    # Hämta klassnamn om de finns tillgängliga, annars använd index 0,1,2
-    # Antag att class_names = ['CN', 'MCI', 'AD'] eller liknande
-    # Du kan hämta detta från test_loader.dataset.classes om det finns
-    
+    # Class-specific metrics
     if net.module._num_classes == 2:
-        # Din befintliga kod för binär
-        tp = cm[0][0]
-        fn = cm[0][1]
-        fp = cm[1][0]
-        tn = cm[1][1]
+        tp = cm[0][0]; fn = cm[0][1]; fp = cm[1][0]; tn = cm[1][1]
         info["sensitivity"] = tp/(tp+fn) if (tp+fn) > 0 else 0
         info["specificity"] = tn/(tn+fp) if (tn+fp) > 0 else 0
-        
-        # print(f"\nEpoch {epoch} (Binary): TP:{tp} FN:{fn} FP:{fp} TN:{tn}", flush=True)
-
     else:
-        # LOGIK FÖR 3 KLASSER (One-vs-Rest)
-        # Vi loopar igenom varje klass och ser den som "Positiv" och resten som "Negativa"
-        
-        # print(f"\nEpoch {epoch} (Multi-class breakdown):", flush=True)
-        
-        sensitivities = []
-        specificities = []
-        
-        # cm rader = True, kolumner = Pred
+        sensitivities, specificities = [], []
         for c in range(net.module._num_classes):
-            # True Positive (Diagonalen)
             tp = cm[c, c]
-            
-            # False Negative (Summan av raden c, minus TP) -> Missade fall av klass c
             fn = np.sum(cm[c, :]) - tp
-            
-            # False Positive (Summan av kolumn c, minus TP) -> Felaktigt gissat på klass c
             fp = np.sum(cm[:, c]) - tp
-            
-            # True Negative (Totala summan minus rad c och kolumn c)
             tn = np.sum(cm) - (tp + fp + fn)
-            
-            # Beräkna mått
             sensitivity = tp / (tp + fn) if (tp + fn) > 0 else 0
             specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
             precision = tp / (tp + fp) if (tp + fp) > 0 else 0
@@ -169,20 +229,12 @@ def eval_pipnet(
             
             sensitivities.append(sensitivity)
             specificities.append(specificity)
-            
-            # Spara i info-dicten. Exempel: "sensitivity_0" (för CN), "sensitivity_1" (för MCI)
             info[f"sensitivity_class_{c}"] = sensitivity
             info[f"specificity_class_{c}"] = specificity
             info[f"f1_class_{c}"] = f1_c
             
-            # print(f" Class {c}: Sens: {sensitivity:.3f}, Spec: {specificity:.3f}, F1: {f1_c:.3f}", flush=True)
-
-        # Macro-average (verifiering av balanced acc och macro-f1)
-        info["macro_sensitivity"] = np.mean(sensitivities) # Samma som Balanced Acc
+        info["macro_sensitivity"] = np.mean(sensitivities)
         info["macro_specificity"] = np.mean(specificities)
-        
-        # Top-3 är meningslöst för 3 klasser (alltid 1.0), ta bort eller sätt till acc
-        # info['top3_accuracy'] = info['test_accuracy'] 
 
     return info
 

@@ -15,6 +15,7 @@ import matplotlib.pyplot as plt
 import random
 import torch
 import torch.nn as nn
+from datetime import datetime
 
 # Egna moduler
 from utils import set_device, get_optimizer_nn, init_weights_xavier, get_args, Log
@@ -43,6 +44,7 @@ np.random.seed(args.seed)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 #%% Get Dataloaders
+print("Start time:", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
 # Dataloaders returnerar nu (inputs_dict, masks_dict, labels)
 dataloaders = get_dataloaders(args)
@@ -220,7 +222,7 @@ else:
 lrs_pretrain_net = []
 
 
-
+print("Training start time:", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 #%% 3D-PIPNet Training
 
 #%% PHASE (1): Pretraining Prototypes
@@ -400,6 +402,8 @@ for epoch in range(1, args.epochs + 1):
 net.eval()
 torch.save({'model_state_dict': net.state_dict(), 'optimizer_net_state_dict': optimizer_net.state_dict(), 'optimizer_classifier_state_dict': optimizer_classifier.state_dict()}, os.path.join(os.path.join(args.log_dir, 'checkpoints'),'net_trained_last'))
 
+print("Training complete time:", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
 # Visualization & Pruning of unused prototypes
 print("Visualizing Prototypes...", flush=True)
 topks, img_prototype, proto_coord = visualize_topk(net, projectloader, args.num_classes, device, 'visualised_prototypes_topk', args, save=False)
@@ -437,3 +441,4 @@ for c in range(net.module._classification.weight.shape[0]):
     if args.test_split == 0.:
         print("Class", c, "(", list(testloader.dataset.class_to_idx.keys())[list(testloader.dataset.class_to_idx.values()).index(c)], "):", "has", len(relevant_ps), "relevant prototypes: ", relevant_ps, flush=True)
 
+print("End time:", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))

@@ -14,6 +14,7 @@ import pandas as pd
 import random
 import torch
 from copy import deepcopy
+from datetime import datetime
 
 from utils import get_args
 from make_dataset import get_dataloaders
@@ -48,6 +49,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 #%% Get Dataloaders for the current_fold
+print("Start time:", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
 dataloaders = get_dataloaders(args)
 
@@ -62,6 +64,7 @@ test_projectloader = dataloaders[7]
     
     
 #%% Evaluate 3D-PIPNet trained for the current_fold
+print("Start testing time:", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
 print("------", flush = True)
 print("PIPNet performances @fold: ", current_fold, flush = True)
@@ -101,6 +104,28 @@ with torch.no_grad():
     args.dshape = dshape 
     print(f"Output shape ({first_mod}): {proto_features.shape}", flush=True)
 
+# 2. Räkna ut offsets dynamiskt (Samma logik som i dina andra filer)
+modalities = pipnet.module.modalities # T.ex. ['mri', 'amy'] eller ['mri', 'pet', 'tau']
+modality_indices = {} # {'mri': (0, 512), 'amy': (512, 1024), ...}
+current_offset = 0
+
+for mod in modalities:
+    add_on_module = pipnet.module._add_ons[mod]
+    num_protos = 0
+    # Leta upp Conv3d lagret för att veta exakt antal kanaler
+    for m in add_on_module.modules():
+        if isinstance(m, torch.nn.Conv3d):
+            num_protos = m.out_channels
+            break
+    
+    # Fallback om det krånglar
+    if num_protos == 0: 
+        num_protos = getattr(args, 'num_features', 512)
+    if num_protos == 0: 
+        num_protos = 512
+
+    modality_indices[mod] = (current_offset, current_offset + num_protos)
+    current_offset += num_protos
 
 #%% Get the Global Explanation
 print("\n--- Visualizing Global Explanations (Top 1) ---", flush=True)
@@ -163,7 +188,8 @@ info = eval_pipnet(
     pipnet, 
     testloader, 
     "notused", 
-    device)
+    device,
+    modality_ranges=modality_indices)
 
 for elem in info.items():
     print(elem)
@@ -205,29 +231,8 @@ print("\n--- Multimodal Contribution Analysis (Dynamic) ---", flush=True)
 
 # 1. Hämta vikter och modaliteter
 weights = pipnet.module._classification.weight.detach().cpu()
-modalities = pipnet.module.modalities # T.ex. ['mri', 'amy'] eller ['mri', 'pet', 'tau']
 
-# 2. Räkna ut offsets dynamiskt (Samma logik som i dina andra filer)
-modality_indices = {} # {'mri': (0, 512), 'amy': (512, 1024), ...}
-current_offset = 0
 
-for mod in modalities:
-    add_on_module = pipnet.module._add_ons[mod]
-    num_protos = 0
-    # Leta upp Conv3d lagret för att veta exakt antal kanaler
-    for m in add_on_module.modules():
-        if isinstance(m, torch.nn.Conv3d):
-            num_protos = m.out_channels
-            break
-    
-    # Fallback om det krånglar
-    if num_protos == 0: 
-        num_protos = getattr(args, 'num_features', 512)
-    if num_protos == 0: 
-        num_protos = 512
-
-    modality_indices[mod] = (current_offset, current_offset + num_protos)
-    current_offset += num_protos
 
 # 3. Analysera per klass
 for c in range(weights.shape[0]):
@@ -320,3 +325,5 @@ for percent in [95.]:
         pipnet, ood_testloader, args.epochs, device, class_thresholds)
     print("class threshold ID fraction (FPR) with percent", percent,":", 
           id_fraction, flush=True)
+
+print("End time:", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
