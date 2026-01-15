@@ -184,6 +184,7 @@ for c in range(pipnet.module._classification.weight.shape[0]):
 #    - Classification performances, 
 #    - Explanations' size
 print("\n--- Evaluating PIPNet on Test Set ---", flush=True)
+print("Start time on testset:", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 info = eval_pipnet(
     pipnet, 
     testloader, 

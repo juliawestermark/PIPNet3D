@@ -211,30 +211,40 @@ def eval_pipnet(
     info["balanced_accuracy"] = balanced_accuracy_score(y_trues, y_preds_classes)
 
     # Class-specific metrics
+    # if net.module._num_classes == 2:
+    #     tp = cm[0][0]; fn = cm[0][1]; fp = cm[1][0]; tn = cm[1][1]
+    #     info["sensitivity"] = tp/(tp+fn) if (tp+fn) > 0 else 0
+    #     info["specificity"] = tn/(tn+fp) if (tn+fp) > 0 else 0
+    # else:
+    sensitivities, specificities = [], []
+    for c in range(net.module._num_classes):
+        tp = cm[c, c]
+        fn = np.sum(cm[c, :]) - tp
+        fp = np.sum(cm[:, c]) - tp
+        tn = np.sum(cm) - (tp + fp + fn)
+        sensitivity = tp / (tp + fn) if (tp + fn) > 0 else 0
+        specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
+        precision = tp / (tp + fp) if (tp + fp) > 0 else 0
+        f1_c = 2 * (precision * sensitivity) / (precision + sensitivity) if (precision + sensitivity) > 0 else 0
+        
+        sensitivities.append(sensitivity)
+        specificities.append(specificity)
+        info[f"sensitivity_class_{c}"] = sensitivity
+        info[f"specificity_class_{c}"] = specificity
+        info[f"f1_class_{c}"] = f1_c
+        
+    info["macro_sensitivity"] = np.mean(sensitivities)
+    info["macro_specificity"] = np.mean(specificities)
+
+    # --- SPECIALHANTERING FÖR BINÄR (Valfritt men bekvämt) ---
     if net.module._num_classes == 2:
-        tp = cm[0][0]; fn = cm[0][1]; fp = cm[1][0]; tn = cm[1][1]
-        info["sensitivity"] = tp/(tp+fn) if (tp+fn) > 0 else 0
-        info["specificity"] = tn/(tn+fp) if (tn+fp) > 0 else 0
-    else:
-        sensitivities, specificities = [], []
-        for c in range(net.module._num_classes):
-            tp = cm[c, c]
-            fn = np.sum(cm[c, :]) - tp
-            fp = np.sum(cm[:, c]) - tp
-            tn = np.sum(cm) - (tp + fp + fn)
-            sensitivity = tp / (tp + fn) if (tp + fn) > 0 else 0
-            specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
-            precision = tp / (tp + fp) if (tp + fp) > 0 else 0
-            f1_c = 2 * (precision * sensitivity) / (precision + sensitivity) if (precision + sensitivity) > 0 else 0
-            
-            sensitivities.append(sensitivity)
-            specificities.append(specificity)
-            info[f"sensitivity_class_{c}"] = sensitivity
-            info[f"specificity_class_{c}"] = specificity
-            info[f"f1_class_{c}"] = f1_c
-            
-        info["macro_sensitivity"] = np.mean(sensitivities)
-        info["macro_specificity"] = np.mean(specificities)
+        # Antagande: Class 1 är den "positiva" (Sjukdom/AD)
+        # Sensitivity = Hur bra hittar vi Klass 1?
+        info["sensitivity"] = info["sensitivity_class_1"]
+        
+        # Specificity = Hur bra hittar vi Klass 0 (dvs förkastar sjukdom)?
+        # Detta är matematiskt samma sak som sensitivity_class_0
+        info["specificity"] = info["sensitivity_class_0"]
 
     return info
 
