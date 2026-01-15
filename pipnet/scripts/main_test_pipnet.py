@@ -204,28 +204,39 @@ print("\n--- Evaluating Extracted Prototypes ---", flush=True)
 
 columns=["detection_rate", "mean_pcc_d", "mean_pcc_h", "mean_pcc_w", "std_pcc_d", "std_pcc_h", "std_pcc_w", "LC"]
 
+# Kör evalueringen
 ps_test_evaluation = eval_local_explanations(pipnet, local_explanations_test, device, args)
 
+# Bygg DataFrame som du gjorde innan
 ps_test_detections = ps_test_evaluation[0]
 ps_test_mean_coords = pd.DataFrame(ps_test_evaluation[1]).transpose().round(decimals=2)
 ps_test_std_coords = pd.DataFrame(ps_test_evaluation[2]).transpose().round(decimals=2)
 ps_test_lc = pd.Series(ps_test_evaluation[3])
-avg_ps_consistency = np.nanmean(np.array([h for h in ps_test_evaluation[3].values()]))
+
 eval_proto_test = pd.concat([ps_test_detections, ps_test_mean_coords, ps_test_std_coords, ps_test_lc], axis=1)
 eval_proto_test.columns = columns  
 
-# Note: check_empty_prototypes logic might need MM updates in test_model.py, usually safe to skip if buggy
-# empty_ps = check_empty_prototypes(args, pipnet, img_prototype_top1, proto_coord_top1)
+# --- HÄR ÄR FIXEN ---
+# Filtrera fram endast de prototyper som faktiskt detekterades minst en gång
+active_protos = eval_proto_test[eval_proto_test["detection_rate"] > 0]
 
-# 1. Spara till fil (Bäst för analys)
+# Beräkna snittet bara på dessa
+avg_ps_consistency = active_protos["LC"].mean()
+
+# Spara till fil (Hela tabellen är bra att spara för att se vilka som är 0)
 csv_path = os.path.join(args.log_dir, f"prototype_metrics_fold{current_fold}.csv")
 eval_proto_test.to_csv(csv_path)
 print(f"\n[INFO] Prototype metrics saved to: {csv_path}", flush=True)
 
-# 2. Skriv ut en sammanfattning i terminalen
+# Skriv ut sammanfattning
 print("\n--- Prototype Evaluation Summary ---", flush=True)
-print(eval_proto_test.head(10)) # Visar de 10 första
-print(f"Average Local Consistency: {avg_ps_consistency:.4f}", flush=True)
+print(f"Total prototypes: {len(eval_proto_test)}")
+print(f"Active prototypes (detected > 0 times): {len(active_protos)}")
+print(f"Average Local Consistency (Active only): {avg_ps_consistency:.4f}", flush=True)
+
+# Om du vill se Active Protos i terminalen istället för bara de första 10 (som kan vara nollor)
+print("\nTop 10 Active Prototypes by Detection Rate:")
+print(active_protos.sort_values(by="detection_rate", ascending=False).head(10))
 # ---------------------------------------
 
 print("\n--- Multimodal Contribution Analysis (Dynamic) ---", flush=True)

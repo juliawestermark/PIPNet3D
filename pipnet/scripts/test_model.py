@@ -274,12 +274,10 @@ def get_local_explanations(
         projectloader, 
         device,
         args: argparse.Namespace,
-        plot = False):
-    """
-    Compute local explanations for Multimodal PIPNet.
-    Handles dictionary inputs/outputs and maps global prototype indices
-    to specific modalities.
-    """
+        plot = False,
+        plot_limit_per_modality = 10, # ### ÄNDRAT: Nu sätter vi gräns per modalitet
+        max_samples = None 
+        ):
     
     print("Detect prototypes in predictions...", flush = True)
 
@@ -295,22 +293,15 @@ def get_local_explanations(
     y_preds = []
     y_trues = []
     
-    # --- NY KOD START: Skapa översättningstabell (0 -> 'CN', 1 -> 'AD') ---
-    # Vi hämtar class_to_idx från datasetet och vänder på den
     try:
         class_to_idx = projectloader.dataset.class_to_idx
         idx_to_class = {v: k for k, v in class_to_idx.items()}
-        print(f"[INFO] Class mapping found: {class_to_idx}")
     except AttributeError:
-        print("[WARN] Could not find class_to_idx in dataset. Using numbers.")
-        idx_to_class = {} # Fallback
-    # --- NY KOD SLUT ---
-    
-    patchsize, skip_z, skip_y, skip_x = get_patch_size(args)
+        idx_to_class = {}
 
+    patchsize, skip_z, skip_y, skip_x = get_patch_size(args)
     dataset_paths = projectloader.dataset.X_paths
     
-    # Make sure the model is in evaluation mode
     net.eval()
     classification_weights = net.module._classification.weight
 
@@ -318,12 +309,12 @@ def get_local_explanations(
     modality_offsets = {}
     current_offset = 0
     
+    # ### NYTT: Håll koll på antal plottar per modalitet
+    plots_count_per_modality = {mod: 0 for mod in modalities}
+    
     for mod in modalities:
-        # --- FIX: Robust check for number of prototypes ---
         add_on_module = net.module._add_ons[mod]
         num_protos = 0
-        
-        # Check attribute or look for Conv3d recursively
         if hasattr(add_on_module, '_num_prototypes'):
              num_protos = add_on_module._num_prototypes
         else:
@@ -347,11 +338,14 @@ def get_local_explanations(
     
     for k, (xs, ms, ys) in img_iter: 
         
+        if max_samples is not None and k >= max_samples:
+            print(f"Reached max_samples ({max_samples}). Stopping.")
+            break
+
         ys = ys.to(device)
         xs = {key: val.to(device) for key, val in xs.items()}
         ms = {key: val.to(device) for key, val in ms.items()} if ms is not None else None
         
-        # --- FIX: Hitta en giltig sökväg från VILKEN modalitet som helst ---
         img_name_ref = "Unknown_Ref"
         for mod in modalities:
             path = dataset_paths[mod][k]
@@ -360,74 +354,71 @@ def get_local_explanations(
                 break
 
         local_explanation = dict() 
-        
+        cached_images = {} 
+
         with torch.no_grad():
-            
             softmaxes_dict, pooled, out = net(xs, masks=ms, inference=True) 
             
-            sorted_out, sorted_out_indices = torch.sort(out.squeeze(0), descending=True) 
             max_out_score, ys_pred = torch.max(out, dim=1) 
-            
             y_preds.append(ys_pred.item())
             y_trues.append(ys.item())
             
-            for pred_class_idx in sorted_out_indices:
+            pred_class_idx = ys_pred.item()
+            
+            sorted_pooled, sorted_pooled_indices = torch.sort(pooled.squeeze(0), descending=True) 
+            
+            for prototype_idx in sorted_pooled_indices:
+                p_idx_item = prototype_idx.item()
                 
-                sorted_pooled, sorted_pooled_indices = torch.sort(pooled.squeeze(0), descending=True) 
+                simweight = pooled[0, prototype_idx].item() * net.module._classification.weight[pred_class_idx, prototype_idx].item()
                 
-                simweights = []
-                
-                for prototype_idx in sorted_pooled_indices:
-                    
-                    p_idx_item = prototype_idx.item()
-                    simweight = pooled[0, prototype_idx].item() * net.module._classification.weight[pred_class_idx, prototype_idx].item()
-                    
-                    simweights.append(simweight)
-                    if abs(simweight) > 0.01:
+                if abs(simweight) > 0.01:
+                    c_weight = torch.max(classification_weights[:, prototype_idx]) 
                         
-                        c_weight = torch.max(classification_weights[:, prototype_idx]) 
+                    if (c_weight > 1e-10):
+                    
+                        target_mod = None
+                        local_p_idx = 0
+                        for mod, (start, end) in modality_offsets.items():
+                            if start <= p_idx_item < end:
+                                target_mod = mod
+                                local_p_idx = p_idx_item - start
+                                break
                         
-                        if (c_weight > 1e-10):
-                            
-                            target_mod = None
-                            local_p_idx = 0
-                            for mod, (start, end) in modality_offsets.items():
-                                if start <= p_idx_item < end:
-                                    target_mod = mod
-                                    local_p_idx = p_idx_item - start
-                                    break
-                            
-                            if target_mod is None:
-                                continue
+                        if target_mod is None: continue
 
-                            softmax_map = softmaxes_dict[target_mod]
+                        # Koordinat-logik (snabb GPU-operation)
+                        softmax_map = softmaxes_dict[target_mod]
+                        max_hw, max_idx_hw = torch.max(softmax_map[0, local_p_idx, :, :, :], dim=0) 
+                        max_h, max_idx_h = torch.max(max_hw, dim=0) 
+                        max_w, max_idx_w = torch.max(max_h, dim=0)  
 
-                            # get the coordinate of the maximum in the feature's space
-                            max_hw, max_idx_hw = torch.max(softmax_map[0, local_p_idx, :, :, :], dim=0) 
-                            max_h, max_idx_h = torch.max(max_hw, dim=0) 
-                            max_w, max_idx_w = torch.max(max_h, dim=0)  
-
-                            w_idx = max_idx_w.item()
-                            h_idx = max_idx_h[w_idx].item()
-                            d_idx = max_idx_hw[h_idx, w_idx].item()
-                            
+                        w_idx = max_idx_w.item()
+                        h_idx = max_idx_h[w_idx].item()
+                        d_idx = max_idx_hw[h_idx, w_idx].item()
+                        
+                        # Bild-cache (ladda bara om vi inte redan gjort det för denna bild)
+                        if target_mod not in cached_images:
                             img_path = dataset_paths[target_mod][k]
-                            
                             if pd.isna(img_path) or str(img_path).lower() == 'nan':
-                                continue
-                                
-                            img_np = np.load(img_path).astype(np.float32)
-                            
-                            # Handle channels
-                            if img_np.ndim == 3:
-                                img_np = np.expand_dims(img_np, axis=0) 
-                            elif img_np.ndim == 4:
-                                img_np = np.transpose(img_np, (3, 0, 1, 2)) 
-                            
-                            img_tensor = torch.from_numpy(img_np)
-                            img_tensor = transforms.Resize(spatial_size = (args.slices, args.rows, args.cols))(img_tensor)
-                            img_tensor = img_tensor.unsqueeze(0) 
-                            
+                                cached_images[target_mod] = None 
+                            else:
+                                try:
+                                    img_np = np.load(img_path).astype(np.float32)
+                                    if img_np.ndim == 3: img_np = np.expand_dims(img_np, axis=0) 
+                                    elif img_np.ndim == 4: img_np = np.transpose(img_np, (3, 0, 1, 2)) 
+                                    
+                                    img_tensor = torch.from_numpy(img_np)
+                                    img_tensor = transforms.Resize(spatial_size = (args.slices, args.rows, args.cols))(img_tensor)
+                                    img_tensor = img_tensor.unsqueeze(0)
+                                    cached_images[target_mod] = img_tensor
+                                except Exception as e:
+                                    print(f"Error loading {img_path}: {e}")
+                                    cached_images[target_mod] = None
+
+                        img_tensor = cached_images[target_mod]
+                        
+                        if img_tensor is not None:
                             ps_coord = get_img_coordinates(
                                 args.slices, args.rows, args.cols, 
                                 softmax_map.shape, 
@@ -437,49 +428,57 @@ def get_local_explanations(
                             local_explanation[p_idx_item] = (ps_coord, simweight)
                             
         local_explanations.append(local_explanation)
-        # title = "Prediction " + str(ys_pred.item()) + "\n Detected PS: " + str(list(local_explanation.keys()))
         
-        # --- NY KOD START: Hämta det läsbara namnet ---
-        # ys_pred är indexet (t.ex. 1). Vi slår upp det i idx_to_class (t.ex. 'AD').
-        pred_idx = ys_pred.item()
-        pred_name = idx_to_class.get(pred_idx, str(pred_idx)) # Fallback till siffra om namn saknas
-        
-        # Samma sak för sanningen (ys) om du vill visa det också
-        true_idx = ys.item()
-        true_name = idx_to_class.get(true_idx, str(true_idx))
-
-        title = f"Pred: {pred_name} | True: {true_name}\n Detected PS: {str(list(local_explanation.keys()))}"
-        # --- NY KOD SLUT ---
-
+        # --- NY LOGIK FÖR ATT BEGRÄNSA PLOTTNING PER MODALITET ---
         if plot:
-            try:
-                img_str = str(img_name_ref)
-                
-                # --- FIX: Robust Regex och Basename ---
-                # 1. Hitta Subjekt ID (XXX_S_XXXX) oavsett path-struktur
-                match_subj = re.search(r"(\d{3}_S_\d{4})", img_str)
-                if match_subj:
-                    subj = match_subj.group(1)
-                else:
-                    subj = "UnknownSubj"
-                
-                # 2. Hitta Filnamn/Exam ID (ta bort .npy och path)
-                # Detta funkar både för /.../uuid.npy och /.../I12345.npy
-                base_name = os.path.basename(img_str)
-                exam, _ = os.path.splitext(base_name)
-                # --------------------------------------
+            # 1. Ta reda på vilka modaliteter som är AKTIVA i denna bildens förklaring
+            active_modalities_in_sample = set()
+            for proto_idx in local_explanation.keys():
+                # Hitta vilken modalitet detta index tillhör
+                for mod, (start, end) in modality_offsets.items():
+                    if start <= proto_idx < end:
+                        active_modalities_in_sample.add(mod)
+                        break
+            
+            # 2. Kolla om vi har plats kvar i kvoten för NÅGON av de aktiva modaliteterna
+            should_plot = False
+            for mod in active_modalities_in_sample:
+                if plots_count_per_modality[mod] < plot_limit_per_modality:
+                    should_plot = True
+                    # Vi behöver bara hitta EN anledning att plotta
+                    break 
+            
+            # 3. Plotta om villkoret uppfylldes
+            if should_plot:
+                pred_idx = ys_pred.item()
+                pred_name = idx_to_class.get(pred_idx, str(pred_idx))
+                true_idx = ys.item()
+                true_name = idx_to_class.get(true_idx, str(true_idx))
+                title = f"Pred: {pred_name} | True: {true_name}\n Detected PS: {str(list(local_explanation.keys()))}"
 
-                text = "local_expl_"
-                ps_name = text + subj + "_" + exam + "_idx" + str(k)
-                plot_name = os.path.join(plot_dir, ps_name + ".png")
-                
-                xs_cpu = {k: v.cpu() for k, v in xs.items()}
-                
-                # Skicka med modality_offsets!
-                plot_local_explanation(xs_cpu, local_explanation, modality_offsets, title=title, save_path=plot_name)
-                
-            except Exception as e:
-                print(f"[WARN] Could not plot explanation for {img_name_ref}: {e}")
+                try:
+                    img_str = str(img_name_ref)
+                    match_subj = re.search(r"(\d{3}_S_\d{4})", img_str)
+                    subj = match_subj.group(1) if match_subj else "UnknownSubj"
+                    base_name = os.path.basename(img_str)
+                    exam, _ = os.path.splitext(base_name)
+
+                    ps_name = "local_expl_" + subj + "_" + exam + "_idx" + str(k)
+                    plot_name = os.path.join(plot_dir, ps_name + ".png")
+                    
+                    xs_cpu = {k: v.cpu() for k, v in xs.items()}
+                    plot_local_explanation(xs_cpu, local_explanation, modality_offsets, title=title, save_path=plot_name)
+                    
+                    # Uppdatera räknarna för de modaliteter som fanns med i bilden
+                    for mod in active_modalities_in_sample:
+                        plots_count_per_modality[mod] += 1
+                        
+                    # Debug-utskrift så du ser att det funkar
+                    # print(f"Plotted idx {k}. Counts: {plots_count_per_modality}", flush=True)
+
+                except Exception as e:
+                    print(f"[WARN] Could not plot explanation: {e}")
+        # ---------------------------------------------------------
         
     return local_explanations, y_preds, y_trues
                         
