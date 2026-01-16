@@ -178,12 +178,11 @@ class AugSupervisedDataset(torch.utils.data.Dataset):
 
     def __len__(self):
         return len(self.y)
-    
-    # --- FIX 1: Ta emot modalitetsnamn för att veta antal kanaler ---
+
     def _get_empty_volume(self, modality):
-        # Hårdkodat baserat på dina behov: AMY=4, allt annat (MRI)=1
-        channels = 4 if modality == 'amy' else 1
-        return torch.zeros((channels, *self.img_shape), dtype=torch.float32)
+        # ÄNDRING: Returnera alltid 1 kanal. 
+        # (Vi struntar i om det är 'amy' eller 'mri', vi vill ha konsekvens).
+        return torch.zeros((1, *self.img_shape), dtype=torch.float32)
 
     def _load_volume(self, path, modality):
         # Om path är NaN (saknas)
@@ -193,17 +192,31 @@ class AugSupervisedDataset(torch.utils.data.Dataset):
         try:
             vol = np.load(path).astype(np.float32)
             
-            # --- FIX 2: Hantera dimensioner ---
-            if vol.ndim == 3:
-                # (D, H, W) -> (1, D, H, W)
-                vol = torch.from_numpy(vol).unsqueeze(0)
-            elif vol.ndim == 4:
-                # (D, H, W, C) -> (C, D, H, W)
-                vol = torch.from_numpy(vol).permute(3, 0, 1, 2)
-            else:
-                vol = torch.from_numpy(vol).unsqueeze(0)
+            # --- NY LOGIK FÖR ATT TA BARA FÖRSTA KANALEN ---
+            
+            # Fall 1: Bilden är 4D (D, H, W, C) - Vanligt format om man sparar nifti till npy
+            if vol.ndim == 4:
+                # Vi tar bara ut index 0 från sista dimensionen (kanalen)
+                # Resultatet blir 3D: (D, H, W)
+                vol = vol[:, :, :, 0]
+            
+            # Fall 2: Bilden är redan 3D (D, H, W) - Gör ingenting
+            
+            # --- SLUT PÅ NY LOGIK ---
 
-            return vol, 1.0 
+            # Nu konverterar vi till Tensor och lägger till kanal-dimensionen först
+            # Resultat: (1, D, H, W)
+            vol_tensor = torch.from_numpy(vol)
+            
+            # Säkerhetscheck ifall volymen råkade vara (C, D, H, W) från början
+            if vol_tensor.ndim == 3:
+                vol_tensor = vol_tensor.unsqueeze(0)
+            elif vol_tensor.ndim == 4 and vol_tensor.shape[0] > 1:
+                 # Om den var (C, D, H, W) tar vi första där också
+                 vol_tensor = vol_tensor[0:1, ...]
+
+            return vol_tensor, 1.0 
+            
         except Exception as e:
             print(f"Error loading {path}: {e}")
             return self._get_empty_volume(modality), 0.0
@@ -215,10 +228,12 @@ class AugSupervisedDataset(torch.utils.data.Dataset):
 
         for mod in self.modalities:
             path = self.X_paths[mod][idx]
-            # Skicka med 'mod' så vi vet om det ska vara 1 eller 4 kanaler vid NaN
             volume, mask = self._load_volume(path, mod)
             
-            # Applicera transforms
+            #Dubbelkolla shape här innan return (DEBUG)
+            if volume.shape[0] != 1:
+                print(f"SHAPE ERROR in {mod}: {volume.shape}")
+
             if mask == 1.0 and self.transform:
                 volume = self.transform(volume)
                 mi, ma = volume.min(), volume.max()
@@ -249,16 +264,23 @@ class TwoAugSelfSupervisedDataset(torch.utils.data.Dataset):
     
     # --- FIX 1: Rätt kanaler vid tom data ---
     def _get_empty_volume(self, modality):
-        channels = 4 if modality == 'amy' else 1
-        return torch.zeros((channels, *self.img_shape), dtype=torch.float32)
+        # --- FIX: Returnera ALLTID 1 kanal (1, D, H, W) ---
+        # Detta garanterar att vi kan stacka tensors även om en modalitet saknas.
+        return torch.zeros((1, *self.img_shape), dtype=torch.float32)
 
     def _process_view(self, volume, is_present):
+        """Applicerar transform och normalisering om bilden finns."""
         if is_present and self.transform:
+            # Applicera slumpmässig augmentering
             vol = self.transform(volume)
+            
+            # Normalisera till 0-1 (Min-Max scaling)
             mi, ma = vol.min(), vol.max()
             if ma > mi:
                 vol = (vol - mi) / (ma - mi)
             return vol
+        
+        # Om bilden inte finns (är noll-tensor) returnera den bara
         return volume
 
     def __getitem__(self, idx):
@@ -271,40 +293,58 @@ class TwoAugSelfSupervisedDataset(torch.utils.data.Dataset):
         for mod in self.modalities:
             path = self.X_paths[mod][idx]
             
-            # NaN Check
+            # 1. Hantera NaN / Saknad fil
             if pd.isna(path) or str(path).lower() == 'nan':
-                # FIX: Skicka med mod så vi får (4, D, H, W) för amy
                 raw_tensor = self._get_empty_volume(mod) 
                 is_present = False
                 mask_val = 0.0
             else:
                 try:
+                    # Ladda fil
                     raw_vol = np.load(path).astype(np.float32)
                     
-                    # FIX: Dimensioner
-                    if raw_vol.ndim == 3:
-                        raw_tensor = torch.from_numpy(raw_vol).unsqueeze(0)
-                    elif raw_vol.ndim == 4:
-                        raw_tensor = torch.from_numpy(raw_vol).permute(3, 0, 1, 2)
-                    else:
-                        raw_tensor = torch.from_numpy(raw_vol).unsqueeze(0)
+                    # --- FIX: Hantera dimensioner (Tvinga till 1 kanal) ---
+                    
+                    # Om 4D (D, H, W, C), ta bara första kanalen
+                    if raw_vol.ndim == 4:
+                        raw_vol = raw_vol[:, :, :, 0]
+                    
+                    # Konvertera till Tensor
+                    raw_tensor = torch.from_numpy(raw_vol)
+                    
+                    # Lägg till kanal-dimension om den saknas: (D, H, W) -> (1, D, H, W)
+                    if raw_tensor.ndim == 3:
+                        raw_tensor = raw_tensor.unsqueeze(0)
+                    # Säkerhetscheck om den fortfarande är 4D (t.ex. C, D, H, W)
+                    elif raw_tensor.ndim == 4 and raw_tensor.shape[0] > 1:
+                        raw_tensor = raw_tensor[0:1, ...]
                     
                     is_present = True
                     mask_val = 1.0
-                except FileNotFoundError:
-                    print(f"[WARNING] File not found: {path}")
+                    
+                except Exception as e:
+                    # Om filen är korrupt eller inte hittas
+                    print(f"[WARNING] Error loading {path}: {e}")
                     raw_tensor = self._get_empty_volume(mod)
                     is_present = False
                     mask_val = 0.0
 
+            # 2. Skapa två olika vyer (augmenteringar) för Self-Supervised Learning
+            # Eftersom self.transform innehåller slumpmässighet (noise, rotation etc),
+            # kommer view1 och view2 bli lite olika, vilket är poängen.
+            
+            # Vy 1
             view1_dict[mod] = self._process_view(raw_tensor, is_present)
             
+            # Vy 2 (Vi klonar för säkerhets skull, även om transforms oftast inte sker in-place)
             if is_present:
                 raw_tensor_clone = raw_tensor.clone()
             else:
                 raw_tensor_clone = raw_tensor
                 
             view2_dict[mod] = self._process_view(raw_tensor_clone, is_present)
+            
+            # Mask (samma för båda vyer)
             masks[mod] = torch.tensor([mask_val], dtype=torch.float32)
 
         return view1_dict, view2_dict, masks, label

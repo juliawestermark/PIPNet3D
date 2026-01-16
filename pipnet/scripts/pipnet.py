@@ -160,15 +160,17 @@ def get_network(num_classes: int, args: argparse.Namespace):
 
     print(f"Building Multi-Modal PIPNet for: {modalities}", flush=True)
 
+    channels = 1
+    
     for mod in modalities:
         # --- NY KOD BÖRJAR HÄR ---
         # 1. Bestäm antal kanaler baserat på modalitet
-        if mod == 'mri':
-            channels = 1
-        elif mod == 'amy':
-            channels = 4
-        else:
-            channels = 3 # Fallback om du lägger till något annat (t.ex. RGB-video)
+        # if mod == 'mri':
+        #     channels = 1
+        # elif mod == 'amy':
+        #     channels = 4
+        # else:
+        #     channels = 3 # Fallback om du lägger till något annat (t.ex. RGB-video)
 
         print(f"  initializing backbone for {mod} (channels={channels})...", flush=True)
         
