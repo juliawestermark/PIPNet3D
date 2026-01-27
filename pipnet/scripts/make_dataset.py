@@ -182,7 +182,7 @@ class AugSupervisedDataset(torch.utils.data.Dataset):
     def _get_empty_volume(self, modality):
         # ÄNDRING: Returnera alltid 1 kanal. 
         # (Vi struntar i om det är 'amy' eller 'mri', vi vill ha konsekvens).
-        return torch.zeros((1, *self.img_shape), dtype=torch.float32)
+        return torch.zeros((3, *self.img_shape), dtype=torch.float32)
 
     def _load_volume(self, path, modality):
         # Om path är NaN (saknas)
@@ -230,9 +230,9 @@ class AugSupervisedDataset(torch.utils.data.Dataset):
             path = self.X_paths[mod][idx]
             volume, mask = self._load_volume(path, mod)
             
-            #Dubbelkolla shape här innan return (DEBUG)
-            if volume.shape[0] != 1:
-                print(f"SHAPE ERROR in {mod}: {volume.shape}")
+            # #Dubbelkolla shape här innan return (DEBUG)
+            # if volume.shape[0] != 1:
+            #     print(f"SHAPE ERROR in {mod}: {volume.shape}")
 
             if mask == 1.0 and self.transform:
                 volume = self.transform(volume)
@@ -266,7 +266,7 @@ class TwoAugSelfSupervisedDataset(torch.utils.data.Dataset):
     def _get_empty_volume(self, modality):
         # --- FIX: Returnera ALLTID 1 kanal (1, D, H, W) ---
         # Detta garanterar att vi kan stacka tensors även om en modalitet saknas.
-        return torch.zeros((1, *self.img_shape), dtype=torch.float32)
+        return torch.zeros((3, *self.img_shape), dtype=torch.float32)
 
     def _process_view(self, volume, is_present):
         """Applicerar transform och normalisering om bilden finns."""
@@ -305,9 +305,9 @@ class TwoAugSelfSupervisedDataset(torch.utils.data.Dataset):
                     
                     # --- FIX: Hantera dimensioner (Tvinga till 1 kanal) ---
                     
-                    # Om 4D (D, H, W, C), ta bara första kanalen
+                    # Om 4D (D, H, W, C), ta bara andra kanalen
                     if raw_vol.ndim == 4:
-                        raw_vol = raw_vol[:, :, :, 0]
+                        raw_vol = raw_vol[:, :, :, 1]
                     
                     # Konvertera till Tensor
                     raw_tensor = torch.from_numpy(raw_vol)
@@ -315,9 +315,9 @@ class TwoAugSelfSupervisedDataset(torch.utils.data.Dataset):
                     # Lägg till kanal-dimension om den saknas: (D, H, W) -> (1, D, H, W)
                     if raw_tensor.ndim == 3:
                         raw_tensor = raw_tensor.unsqueeze(0)
-                    # Säkerhetscheck om den fortfarande är 4D (t.ex. C, D, H, W)
-                    elif raw_tensor.ndim == 4 and raw_tensor.shape[0] > 1:
-                        raw_tensor = raw_tensor[0:1, ...]
+                    # # Säkerhetscheck om den fortfarande är 4D (t.ex. C, D, H, W)
+                    # elif raw_tensor.ndim == 4 and raw_tensor.shape[0] > 1:
+                    #     raw_tensor = raw_tensor[0:1, ...]
                     
                     is_present = True
                     mask_val = 1.0
@@ -477,27 +477,27 @@ def get_brains(
             RandGaussianNoise(std=rand_noise_std, prob=aug_prob),
             # Affine(translate_params=(rand_shift, rand_shift, rand_shift), image_only=True),
             # RandZoom(min_zoom=min_zoom, max_zoom=max_zoom, prob=aug_prob),
-            # RepeatChannel(repeats=channels),
+            RepeatChannel(repeats=channels),
         ]),
         'train_noaug': Compose([
             Resize(spatial_size = img_shape),
-            # RepeatChannel(repeats=channels),
+            RepeatChannel(repeats=channels),
         ]),
         'project_noaug': Compose([
             Resize(spatial_size = img_shape),
-            # RepeatChannel(repeats=channels),
+            RepeatChannel(repeats=channels),
         ]),
         'val': Compose([
             Resize(spatial_size = img_shape),
-            # RepeatChannel(repeats=channels),
+            RepeatChannel(repeats=channels),
         ]),
         'test': Compose([
             Resize(spatial_size = img_shape),
-            # RepeatChannel(repeats=channels),
+            RepeatChannel(repeats=channels),
         ]),
         'test_projection': Compose([
             Resize(spatial_size = img_shape),
-            # RepeatChannel(repeats=channels),
+            RepeatChannel(repeats=channels),
         ]),
     }
 

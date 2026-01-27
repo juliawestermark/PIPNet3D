@@ -177,8 +177,8 @@ def get_network(num_classes: int, args: argparse.Namespace):
         # 2. Skapa Backbone och skicka med in_channels
         # OBS: Detta kräver att du har uppdaterat video_resnet18_features enligt min tidigare instruktion!
         backbone = base_architecture_to_features[args.net](
-            pretrained = not args.disable_pretrained, 
-            in_channels = channels
+            pretrained = not args.disable_pretrained#, 
+            #in_channels = channels
         )
         # --- NY KOD SLUTAR HÄR ---
         # # 1. Skapa Backbone
