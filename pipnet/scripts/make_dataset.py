@@ -611,7 +611,8 @@ def get_data(args: argparse.Namespace):
 
     # Beräkna downscaling baserat på referens-formen
     ds = args.downscaling
-    orig_slices, orig_rows, orig_cols = reference_shape
+    #orig_slices, orig_rows, orig_cols = reference_shape
+    orig_slices, orig_rows, orig_cols = reference_shape[:3]
     
     args.slices = orig_slices // ds
     args.rows   = orig_rows   // ds
