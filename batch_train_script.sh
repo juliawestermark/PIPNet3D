@@ -3,7 +3,7 @@
 
 #SBATCH -A Berzelius-2025-422
 #SBATCH --gpus=1
-#SBATCH -t 00-08:00:00
+#SBATCH -t 00-12:00:00
 #SBATCH -C thin
 
 # Load your environment

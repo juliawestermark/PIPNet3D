@@ -31,10 +31,10 @@ def get_args(
     Utility functions for handling parsed arguments """
 
     net_dic = {"resnet3D_18_kin400":3, "convnext3D_tiny":1}
-    # dic_classes = {"CN":0, "AD":1} # {"CN":0, "MCI": 1, "AD":2}
-    dic_classes = {"CN":0, "MCI": 1, "AD":2}
-    modalities = ['mri']
-    # modalities = ['mri', 'amy']
+    dic_classes = {"CN":0, "AD":1} # {"CN":0, "MCI": 1, "AD":2}
+    #dic_classes = {"CN":0, "MCI": 1, "AD":2}
+    #modalities = ['mri']
+    modalities = ['mri', 'amy']
 
     #root_folder = "/home/maia-user/PIPNet3D/"
     root_folder = "/proj/berzbiomedicalimagingkth/users/x_julwe/PIPNet3D/"
@@ -54,7 +54,7 @@ def get_args(
         mask_path = os.path.join(dataset_path, "masks", mod, "global_mask.npy")
         # Spara i dicten
         global_mask_paths[mod] = mask_path
-    n_fold = 2           # Number of fold
+    n_fold = 5           # Number of fold
     test_split = 0.2
     seed = 42            # seed for reproducible shuffling
     
@@ -64,21 +64,21 @@ def get_args(
     num_age_prototypes = 5
     num_classes = len(dic_classes)
     out_shape = num_classes
-    task_performed_name = f"{task_performed}_{model_name}"
+    task_performed_name = f"{task_performed}_{model_name}_{downscaling}"
     experiment_folder = os.path.join(root_folder, "results", task_performed_name, net, "fold_" + str(current_fold))
     
     batch_size_pretrain = 16 #16 # 2
     batch_size = 16 #16 # 2
-    epochs_pretrain = 5 #10 # 1
-    epochs = 10 #60 # 2
+    epochs_pretrain = 20 #10 # 1
+    epochs = 60 #60 # 2
     optimizer = "Adam"
     lr = 0.05
     lr_age = 0.1
     lr_block = 0.0001 #0.0005
     lr_net = 0.0001 #0.0005
     weight_decay = 0.1 #0.0
-    num_features = 0
-    freeze_epochs = 5 #10 # 1
+    num_features = int(512/2) #0
+    freeze_epochs = 10 #10 # 1
     gamma = 0.1             # LR's decay factor
     step_size = 7           # LR's frequency decay
     num_workers = 8

@@ -141,11 +141,11 @@ def run_demographics(adni_path, pipnet_path, classes, modalitites):
 
 if __name__ == "__main__":
 
-    pipnet_path = "/home/maia-user/PIPNet3D"
-    adni_path = "/home/maia-user/ADNI_npy"
-
-    #pipnet_path = "/proj/berzbiomedicalimagingkth/users/x_julwe/PIPNet3D/""
+    #pipnet_path = "/home/maia-user/PIPNet3D"
     #adni_path = "/home/maia-user/ADNI_npy"
+
+    pipnet_path = "/proj/berzbiomedicalimagingkth/users/x_julwe/PIPNet3D/"
+    adni_path = "/proj/berzbiomedicalimagingkth/users/x_julwe/ADNI_npy"
 
     modalities = ["mri", "amy"]
     classes = ["CN", "AD"]

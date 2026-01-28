@@ -22,7 +22,7 @@ def create_global_mask(modality, ADNI_PATH_MRI, ADNI_PATH_PET, OUTPUT_ROOT):
     df = dataset[dataset[file_path_modality].notna()]
     # OBS: Om datasetet är enormt, ta ett robust stickprov (t.ex. 200 slumpmässiga bilder) 
     # för att spara RAM. Det brukar räcka för en global mask.
-    nifti_files = df[file_path_modality].sample(n=min(200, len(df)), random_state=42).tolist()
+    nifti_files = df[file_path_modality].sample(n=min(10, len(df)), random_state=42).tolist()
     print(f"Använder {len(nifti_files)} bilder för att bygga genomsnittet.")
 
     # --- Steg A: Skapa mask med Nilearn (NIfTI) ---
@@ -61,14 +61,14 @@ def create_global_mask(modality, ADNI_PATH_MRI, ADNI_PATH_PET, OUTPUT_ROOT):
     print(f"Maskens dimensioner: {mask_arr.shape}")
 
 if __name__ == "__main__":
-    # BASE_PATH = "/proj/berzbiomedicalimagingkth/users/x_julwe"
-    # MRI_ADNI_PATH = os.path.join(BASE_PATH, "ADNI", "ADNI_complete")
-    # PET_ADNI_PATH = os.path.join(BASE_PATH, "ADNI", "ADNI_PET", "ADNI")
+    BASE_PATH = "/proj/berzbiomedicalimagingkth/users/x_julwe"
+    MRI_ADNI_PATH = os.path.join(BASE_PATH, "ADNI", "ADNI_complete")
+    PET_ADNI_PATH = os.path.join(BASE_PATH, "ADNI", "AMY")
 
-    BASE_PATH = "/home/maia-user"
-    MRI_ADNI_PATH = os.path.join(BASE_PATH, "ADNI_complete")
-    PET_ADNI_PATH = os.path.join(BASE_PATH, "ADNI_PET", "ADNI")
-    modality="mri"
+    #BASE_PATH = "/home/maia-user"
+    #MRI_ADNI_PATH = os.path.join(BASE_PATH, "ADNI_complete")
+    #PET_ADNI_PATH = os.path.join(BASE_PATH, "ADNI_PET", "ADNI")
+    modality="amy"
     
     OUTPUT_ROOT = os.path.join(BASE_PATH, "ADNI_npy")
 

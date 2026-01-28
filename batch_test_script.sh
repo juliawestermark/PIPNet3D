@@ -4,7 +4,7 @@
 #SBATCH -A Berzelius-2025-422
 #SBATCH --gpus=1
 #SBATCH -t 00-08:00:00
-#SBATCH -C thin
+#SBATCH --reservation 1g.10gb
 
 # Load your environment
 module load Miniforge3/24.7.1-2-hpc1-bdist

@@ -125,7 +125,7 @@ if __name__ == "__main__":
     print(f"Total PET files to process: {len(df)}")
     # Convert all PET files
     # processed, converted, skipped, failed = convert_all_mri(df, OUTPUT_ROOT)
-    processed, converted, skipped, failed = convert_all_pet(df.iloc[0:10], OUTPUT_ROOT, pet_type)
+    processed, converted, skipped, failed = convert_all_pet(df, OUTPUT_ROOT, pet_type)
 
     # Done
     print("All done!")
