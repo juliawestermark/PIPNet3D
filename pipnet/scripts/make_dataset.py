@@ -35,7 +35,55 @@ from sklearn.model_selection import train_test_split
 from sklearn.model_selection import StratifiedKFold
 
 from make_mm_dataset import load_npy_dataset
+
+def print_split_statistics(df, split_name, modalities):
+    """
+    Dynamisk statistikräknare för godtyckligt antal modaliteter.
     
+    Args:
+        df: DataFramen för den aktuella spliten.
+        split_name: Namn på spliten (t.ex. "Train", "Val").
+        modalities: Lista med strängar, t.ex. ['mri', 'amy', 'tau'].
+    """
+    total = len(df)
+    print(f"\n{'='*10} Statistics for {split_name.upper()} Set {'='*10}")
+    print(f"Total entries (rows): {total}")
+    
+    # Håll koll på kolumner vi faktiskt hittade
+    found_cols = []
+    
+    # 1. Statistik per modalitet
+    for mod in modalities:
+        col_name = f"file_path_{mod}"
+        
+        if col_name in df.columns:
+            # Räkna rader som INTE är NaN och INTE är tomma strängar
+            count = df[col_name].apply(lambda x: pd.notna(x) and str(x).strip() != "").sum()
+            percent = (count / total * 100) if total > 0 else 0
+            
+            print(f"  - Has {mod.upper().ljust(5)}: {count} ({percent:.1f}%)")
+            found_cols.append(col_name)
+        else:
+            print(f"  - Has {mod.upper().ljust(5)}: 0 (Column '{col_name}' missing)")
+
+    # 2. Statistik för snittet (De som har ALLA modaliteter)
+    if found_cols:
+        # Skapa en mask som är True från början
+        has_all_mask = pd.Series([True] * total, index=df.index)
+        
+        for col in found_cols:
+            # Uppdatera masken: Måste ha denna modalitet OCH tidigare modaliteter
+            is_valid = df[col].apply(lambda x: pd.notna(x) and str(x).strip() != "")
+            has_all_mask = has_all_mask & is_valid
+            
+        n_complete = has_all_mask.sum()
+        pct_complete = (n_complete / total * 100) if total > 0 else 0
+        
+        print(f"  ------------------------")
+        print(f"  - Complete Intersection ({'+'.join(modalities)}): {n_complete} ({pct_complete:.1f}%)")
+    
+    print("="*40)
+
 
 def build_preprocessed_paths(df, dic_classes, modalities):
     """
@@ -157,9 +205,16 @@ def get_mm_paths(
     
     print(f"Fold {current_fold} ({set_type}): {len(y_train)} train, {len(y_val)} val, {len(y_test)} test images.")
 
-    if set_type == "train": return X_train, y_train, info
-    elif set_type == "val": return X_val, y_val, info
-    elif set_type == "test": return X_test, y_test, info
+    if set_type == "train":
+        print_split_statistics(X_train_df, set_type, modalities)
+        return X_train, y_train, info
+    elif set_type == "val":
+        print_split_statistics(X_val_df, set_type, modalities)
+        return X_val, y_val, info
+    elif set_type == "test":
+        print_split_statistics(X_test_df, set_type, modalities)
+        return X_test, y_test, info
+    
     
     return X_train, y_train, info
 
