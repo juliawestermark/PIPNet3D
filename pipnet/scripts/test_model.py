@@ -22,7 +22,7 @@ from scipy.stats import entropy
 
 from utils import Log
 from utils import topk_accuracy
-from vis_pipnet import get_patch_size, get_img_coordinates, plot_local_explanation
+from vis_pipnet import get_patch_size_dynamic, get_img_coordinates, plot_local_explanation
 from plot_utils import plot_3d_slices, plot_rgb_slices, generate_rgb_array
 
 
@@ -275,7 +275,7 @@ def get_local_explanations(
         device,
         args: argparse.Namespace,
         plot = False,
-        plot_limit_per_modality = 10, # ### ÄNDRAT: Nu sätter vi gräns per modalitet
+        plot_limit_per_modality = 50,
         max_samples = None 
         ):
     
@@ -299,7 +299,6 @@ def get_local_explanations(
     except AttributeError:
         idx_to_class = {}
 
-    patchsize, skip_z, skip_y, skip_x = get_patch_size(args)
     dataset_paths = projectloader.dataset.X_paths
     
     net.eval()
@@ -309,8 +308,8 @@ def get_local_explanations(
     modality_offsets = {}
     current_offset = 0
     
-    # ### NYTT: Håll koll på antal plottar per modalitet
-    plots_count_per_modality = {mod: 0 for mod in modalities}
+    # Initiera räknare för kombinationer (för plottning)
+    plots_count_combinations = {} 
     
     for mod in modalities:
         add_on_module = net.module._add_ons[mod]
@@ -323,13 +322,9 @@ def get_local_explanations(
                     num_protos = m.out_channels
                     break
         
-        # Fallback
         if num_protos == 0:
             num_protos = getattr(args, 'num_features', 512)
-            # Dubbelkolla att vi inte fick 0 från args heller
-            if num_protos == 0: 
-                num_protos = 512 # Hårdkodad sista utväg
-        # --------------------------------------------------
+            if num_protos == 0: num_protos = 512 
 
         modality_offsets[mod] = (current_offset, current_offset + num_protos)
         current_offset += num_protos
@@ -387,7 +382,6 @@ def get_local_explanations(
                         
                         if target_mod is None: continue
 
-                        # Koordinat-logik (snabb GPU-operation)
                         softmax_map = softmaxes_dict[target_mod]
                         max_hw, max_idx_hw = torch.max(softmax_map[0, local_p_idx, :, :, :], dim=0) 
                         max_h, max_idx_h = torch.max(max_hw, dim=0) 
@@ -397,87 +391,90 @@ def get_local_explanations(
                         h_idx = max_idx_h[w_idx].item()
                         d_idx = max_idx_hw[h_idx, w_idx].item()
                         
-                        # Bild-cache (ladda bara om vi inte redan gjort det för denna bild)
+                        # Ladda och cacha bild (här sker din crop/resize via Dataset egentligen om du använde dataset[k], 
+                        # men här laddar du manuellt. Det är OK om visualize_topk gör det rätt, men här nere 
+                        # måste vi se till att dimensionerna stämmer).
+                        
                         if target_mod not in cached_images:
-                            img_path = dataset_paths[target_mod][k]
-                            if pd.isna(img_path) or str(img_path).lower() == 'nan':
-                                cached_images[target_mod] = None 
+                            # Hämta tensorn direkt från input 'xs' istället för att ladda från disk!
+                            # 'xs' har redan passerat __getitem__ och har rätt storlek/crop.
+                            if target_mod in xs:
+                                img_tensor = xs[target_mod].cpu()
+                                # Om (B, C, D, H, W) -> ta bort batch (C, D, H, W) -> unsqueeze sen (1, C, D, H, W)
+                                # Men oftast är xs[mod] (1, 1, D, H, W).
+                                cached_images[target_mod] = img_tensor
                             else:
-                                try:
-                                    img_np = np.load(img_path).astype(np.float32)
-                                    if img_np.ndim == 3: img_np = np.expand_dims(img_np, axis=0) 
-                                    elif img_np.ndim == 4: img_np = np.transpose(img_np, (3, 0, 1, 2)) 
-                                    
-                                    img_tensor = torch.from_numpy(img_np)
-                                    img_tensor = transforms.Resize(spatial_size = (args.slices, args.rows, args.cols))(img_tensor)
-                                    img_tensor = img_tensor.unsqueeze(0)
-                                    cached_images[target_mod] = img_tensor
-                                except Exception as e:
-                                    print(f"Error loading {img_path}: {e}")
-                                    cached_images[target_mod] = None
+                                cached_images[target_mod] = None
 
                         img_tensor = cached_images[target_mod]
                         
                         if img_tensor is not None:
+                            # --- NYTT: RÄKNA UT PATCH STORLEK DYNAMISKT ---
+                            # img_tensor shape är typiskt (Batch, Channels, D, H, W)
+                            current_shape = img_tensor.shape[-3:] # (D, H, W)
+                            
+                            patchsize, skip_z, skip_y, skip_x = get_patch_size_dynamic(current_shape, args)
+                            
+                            # Använd de dynamiska värdena
                             ps_coord = get_img_coordinates(
-                                args.slices, args.rows, args.cols, 
+                                current_shape[0], current_shape[1], current_shape[2], # slices, rows, cols
                                 softmax_map.shape, 
                                 patchsize, skip_z, skip_y, skip_x,
                                 d_idx, h_idx, w_idx)
+                            # -----------------------------------------------
                             
                             local_explanation[p_idx_item] = (ps_coord, simweight)
                             
         local_explanations.append(local_explanation)
         
-        # --- NY LOGIK FÖR ATT BEGRÄNSA PLOTTNING PER MODALITET ---
-        if plot:
-            # 1. Ta reda på vilka modaliteter som är AKTIVA i denna bildens förklaring
-            active_modalities_in_sample = set()
+        # --- PLOTTING LOGIK (Multimodal Sets) ---
+        if plot and len(local_explanation) > 0:
+            
+            # Identifiera inblandade modaliteter
+            contributing_modalities = set()
             for proto_idx in local_explanation.keys():
-                # Hitta vilken modalitet detta index tillhör
                 for mod, (start, end) in modality_offsets.items():
                     if start <= proto_idx < end:
-                        active_modalities_in_sample.add(mod)
+                        contributing_modalities.add(mod)
                         break
             
-            # 2. Kolla om vi har plats kvar i kvoten för NÅGON av de aktiva modaliteterna
-            should_plot = False
-            for mod in active_modalities_in_sample:
-                if plots_count_per_modality[mod] < plot_limit_per_modality:
-                    should_plot = True
-                    # Vi behöver bara hitta EN anledning att plotta
-                    break 
-            
-            # 3. Plotta om villkoret uppfylldes
-            if should_plot:
-                pred_idx = ys_pred.item()
-                pred_name = idx_to_class.get(pred_idx, str(pred_idx))
-                true_idx = ys.item()
-                true_name = idx_to_class.get(true_idx, str(true_idx))
-                title = f"Pred: {pred_name} | True: {true_name}\n Detected PS: {str(list(local_explanation.keys()))}"
-
-                try:
-                    img_str = str(img_name_ref)
-                    match_subj = re.search(r"(\d{3}_S_\d{4})", img_str)
-                    subj = match_subj.group(1) if match_subj else "UnknownSubj"
-                    base_name = os.path.basename(img_str)
-                    exam, _ = os.path.splitext(base_name)
-
-                    ps_name = "local_expl_" + subj + "_" + exam + "_idx" + str(k)
-                    plot_name = os.path.join(plot_dir, ps_name + ".png")
+            if len(contributing_modalities) > 0:
+                # Skapa set-nyckel
+                combo_key = "_".join(sorted(list(contributing_modalities)))
+                
+                if combo_key not in plots_count_combinations:
+                    plots_count_combinations[combo_key] = 0
+                
+                # Kolla kvot
+                if plots_count_combinations[combo_key] < plot_limit_per_modality:
+                    pred_idx = ys_pred.item()
+                    pred_name = idx_to_class.get(pred_idx, str(pred_idx))
+                    true_idx = ys.item()
+                    true_name = idx_to_class.get(true_idx, str(true_idx))
                     
-                    xs_cpu = {k: v.cpu() for k, v in xs.items()}
-                    plot_local_explanation(xs_cpu, local_explanation, modality_offsets, title=title, save_path=plot_name)
-                    
-                    # Uppdatera räknarna för de modaliteter som fanns med i bilden
-                    for mod in active_modalities_in_sample:
-                        plots_count_per_modality[mod] += 1
+                    title = f"Pred: {pred_name} | True: {true_name}\n Detected PS: {str(list(local_explanation.keys()))}"
+
+                    try:
+                        img_str = str(img_name_ref)
+                        match_subj = re.search(r"(\d{3}_S_\d{4})", img_str)
+                        subj = match_subj.group(1) if match_subj else "UnknownSubj"
+                        base_name = os.path.basename(img_str)
+                        exam, _ = os.path.splitext(base_name)
+
+                        ps_name = f"local_expl_{combo_key}_{subj}_{exam}_idx{k}"
+                        plot_name = os.path.join(plot_dir, ps_name + ".png")
                         
-                    # Debug-utskrift så du ser att det funkar
-                    # print(f"Plotted idx {k}. Counts: {plots_count_per_modality}", flush=True)
+                        xs_cpu = {k: v.cpu() for k, v in xs.items()}
+                        
+                        # Notera: plot_local_explanation behöver också hantera olika storlekar internt,
+                        # men den använder 'modality_offsets' och 'local_explanation' som nu har korrekta
+                        # koordinater tack vare fixen ovan.
+                        plot_local_explanation(xs_cpu, local_explanation, modality_offsets, title=title, save_path=plot_name)
+                        
+                        plots_count_combinations[combo_key] += 1
 
-                except Exception as e:
-                    print(f"[WARN] Could not plot explanation: {e}")
+                    except Exception as e:
+                        print(f"[WARN] Could not plot explanation: {e}")
         # ---------------------------------------------------------
         
     return local_explanations, y_preds, y_trues

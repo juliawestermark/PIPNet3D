@@ -4,7 +4,7 @@
 Created on Tue Dec 19 12:18:57 2023
 
 @author: lisadesanti
-Updated for Multimodal PIPNet (MRI+AMY) - FIX FOR FILE NAMES
+Updated for Multimodal PIPNet (MRI+AMY) - FIX FOR DATASET CROP
 """
 
 import sys
@@ -24,53 +24,14 @@ import random
 from tqdm.auto import tqdm
 import pandas as pd
 
-
-_image_cache = {}
-
-def load_and_preprocess_image(img_path, args, modality="mri", use_cache=True):
-    cache_key = f"{img_path}_{modality}"
-    if use_cache and cache_key in _image_cache:
-        return _image_cache[cache_key]
-
-    if pd.isna(img_path) or str(img_path).lower() == 'nan':
-        return torch.zeros((1, 3, args.slices, args.rows, args.cols))
-
-    try:
-        vol = np.load(img_path).astype(np.float32)
-        
-        img_min = vol.min()
-        img_max = vol.max()
-        if img_max > img_min:
-            vol = (vol - img_min) / (img_max - img_min)
-            
-        if vol.ndim == 3: 
-            vol = np.expand_dims(vol, axis=0)
-            vol = np.repeat(vol, 3, axis=0)
-            
-        elif vol.ndim == 4:
-            vol = np.transpose(vol, (3, 0, 1, 2))
-            if vol.shape[0] >= 3:
-                vol = vol[:3, ...]
-            else:
-                pad = np.zeros_like(vol[0:1])
-                vol = np.concatenate([vol, pad, pad], axis=0)[:3]
-                
-        img_tensor = torch.from_numpy(vol)
-        img_tensor = transforms.Resize(spatial_size=(args.slices, args.rows, args.cols))(img_tensor)
-        img_tensor = img_tensor.unsqueeze(0)
-
-        if use_cache:
-            _image_cache[cache_key] = img_tensor
-
-        return img_tensor
-        
-    except Exception as e:
-        print(f"[ERROR] Could not load {img_path}: {e}")
-        return torch.zeros((1, 3, args.slices, args.rows, args.cols))
-
+# Regex för att hitta Subject ID i filnamn
+_pattern_subj = re.compile(r"(\d{3}_S_\d{4})")
 
 def create_edge_mask_spatial(img_shape, d_min, d_max, h_min, h_max, w_min, w_max):
-    depth, height, width = img_shape[2], img_shape[3], img_shape[4]
+    # img_shape är (1, 1, D, H, W) eller (1, 3, D, H, W)
+    depth, height, width = img_shape[-3], img_shape[-2], img_shape[-1]
+    
+    # Säkra upp så vi inte går utanför bilden
     d_max = min(d_max, depth)
     h_max = min(h_max, height)
     w_max = min(w_max, width)
@@ -78,55 +39,75 @@ def create_edge_mask_spatial(img_shape, d_min, d_max, h_min, h_max, w_min, w_max
     mask = torch.zeros((1, 1, depth, height, width), dtype=torch.bool)
     erosion = torch.zeros((1, 1, depth, height, width), dtype=torch.bool)
 
+    # Kolla att vi har valida intervall
+    if d_min >= d_max or h_min >= h_max or w_min >= w_max:
+        return mask # Returnera tom mask om koordinaterna är fel
+
     mask[:, :, d_min:d_max, h_min:h_max, w_min:w_max] = True
-    erosion[:, :, d_min+1:d_max-1, h_min+1:h_max-1, w_min+1:w_max-1] = True
+    
+    # Erosion för att skapa bara en kant (outline)
+    # Vi måste vara försiktiga så vi inte eroderar bort allt om boxen är liten
+    if (d_max - d_min) > 2 and (h_max - h_min) > 2 and (w_max - w_min) > 2:
+        erosion[:, :, d_min+1:d_max-1, h_min+1:h_max-1, w_min+1:w_max-1] = True
     
     edge_mask = mask & (~erosion)
     return edge_mask
 
+# --- NY: Dynamisk patch-storlek beroende på bildens faktiska storlek ---
+def get_patch_size_dynamic(current_img_shape, args):
+    """
+    Räknar ut patch-storlek baserat på den AKTUELLA bildens dimensioner,
+    inte de globala argumenten.
+    
+    current_img_shape: (D, H, W) tuple
+    """
+    d, h, w = current_img_shape
+    
+    # args.dshape etc är nätverkets output-grid (t.ex. 1x1x1 eller 7x7x7)
+    # Vi delar bildens storlek med grid-storleken för att se hur många pixlar en "prototyp" täcker.
+    patch_z = round(d / args.dshape)
+    patch_y = round(h / args.hshape)
+    patch_x = round(w / args.hshape) # OBS: args.hshape används ofta för width också i PIPNet-kod, kolla om du har args.wshape
+    
+    # Skydd mot division by zero om grid är 1
+    denom_z = max(1, args.dshape - 1)
+    denom_y = max(1, args.hshape - 1)
+    denom_x = max(1, args.wshape - 1) # eller hshape om wshape saknas
 
-def clear_image_cache():
-    global _image_cache
-    _image_cache.clear()
-
-# --- UPDATE: Robustare regex för Subjekt ---
-# Letar efter mönstret "tre siffror, _S_, fyra siffror" oavsett var det är i pathen
-_pattern_subj = re.compile(r"(\d{3}_S_\d{4})")
-
-
-def get_patch_size(args):
-    patch_z = round(args.img_shape[0]/args.dshape)
-    patch_y = round(args.img_shape[1]/args.hshape)
-    patch_x = round(args.img_shape[2]/args.hshape)
-    skip_z = round((args.img_shape[0] - patch_z) / (args.dshape-1))
-    skip_y = round((args.img_shape[1] - patch_y) / (args.hshape-1))
-    skip_x = round((args.img_shape[2] - patch_x) / (args.wshape-1))
+    skip_z = round((d - patch_z) / denom_z)
+    skip_y = round((h - patch_y) / denom_y)
+    skip_x = round((w - patch_x) / denom_x)
+    
     return (patch_z, patch_y, patch_x), skip_z, skip_y, skip_x
 
-
-def get_img_coordinates(slices, rows, cols, softmaxes_shape, patchsize, skip_z, skip_y, skip_x, d_idx, h_idx, w_idx):
-    d_min = d_idx*skip_z
-    d_max = min(slices, d_idx*skip_z + patchsize[0])
-    h_min = h_idx*skip_y
-    h_max = min(rows, h_idx*skip_y + patchsize[1])
-    w_min = w_idx*skip_x
-    w_max = min(cols, w_idx*skip_x + patchsize[2])                                    
+def get_img_coordinates(curr_slices, curr_rows, curr_cols, softmaxes_shape, patchsize, skip_z, skip_y, skip_x, d_idx, h_idx, w_idx):
+    """
+    Beräknar koordinater baserat på bildens FAKTISKA storlek (curr_...)
+    """
+    d_min = d_idx * skip_z
+    d_max = min(curr_slices, d_idx * skip_z + patchsize[0])
     
-    if d_idx == softmaxes_shape[2]-1: d_max = slices
-    if h_idx == softmaxes_shape[3]-1: h_max = rows
-    if w_idx == softmaxes_shape[4]-1: w_max = cols
-    if d_max == slices: d_min = slices-patchsize[0]
-    if h_max == rows: h_min = rows-patchsize[1]
-    if w_max == cols: w_min = cols-patchsize[2]
+    h_min = h_idx * skip_y
+    h_max = min(curr_rows, h_idx * skip_y + patchsize[1])
+    
+    w_min = w_idx * skip_x
+    w_max = min(curr_cols, w_idx * skip_x + patchsize[2])                                    
+    
+    # Justera för sista indexet (för att täcka kanten)
+    if d_idx == softmaxes_shape[2]-1: d_max = curr_slices
+    if h_idx == softmaxes_shape[3]-1: h_max = curr_rows
+    if w_idx == softmaxes_shape[4]-1: w_max = curr_cols
+    
+    # Om patchen hamnar utanför, dra in den
+    if d_max == curr_slices: d_min = max(0, curr_slices - patchsize[0])
+    if h_max == curr_rows: h_min = max(0, curr_rows - patchsize[1])
+    if w_max == curr_cols: w_min = max(0, curr_cols - patchsize[2])
 
     return d_min, d_max, h_min, h_max, w_min, w_max
-
 
 @torch.no_grad()                    
 def visualize_topk(net, projectloader, num_classes, device, foldername, args, save: bool, k=10, plot=False):
     
-    clear_image_cache()
-
     print(f"[INFO] Visualizing prototypes for topk in {os.path.join(args.log_dir, foldername)}...", flush = True)
     dir = os.path.join(args.log_dir, foldername)
     if save or plot:
@@ -136,10 +117,9 @@ def visualize_topk(net, projectloader, num_classes, device, foldername, args, sa
     plot_dir = os.path.join(dir, "plots")
     if plot and not os.path.exists(plot_dir): os.makedirs(plot_dir)
 
-    near_imgs_dirs = dict()
     saved = dict()
     tensors_per_prototype = dict()
-    img_prototype = dict()
+    img_prototype_info = dict() 
     proto_coord = dict()
     
     num_prototypes = net.module._classification.weight.shape[1]
@@ -147,13 +127,13 @@ def visualize_topk(net, projectloader, num_classes, device, foldername, args, sa
     for p in range(num_prototypes):
         saved[p] = 0
         tensors_per_prototype[p] = []
-        img_prototype[p] = []
+        img_prototype_info[p] = []
         proto_coord[p] = []
     
-    patchsize, skip_z, skip_y, skip_x = get_patch_size(args)
     dataset_paths = projectloader.dataset.X_paths
-    modalities = list(dataset_paths.keys()) 
-
+    
+    # --- SETUP MODALITY OFFSETS ---
+    modalities = list(dataset_paths.keys())
     modality_offsets = {}
     current_offset = 0
     if hasattr(net.module, 'modalities'):
@@ -162,17 +142,11 @@ def visualize_topk(net, projectloader, num_classes, device, foldername, args, sa
     for mod in modalities:
         add_on_module = net.module._add_ons[mod]
         num_protos_mod = 0
-        
-        # --- ROBUST PROTOTYPE COUNT ---
         for m in add_on_module.modules():
             if isinstance(m, torch.nn.Conv3d):
                 num_protos_mod = m.out_channels
                 break
-        
-        if num_protos_mod == 0: 
-            print(f"[WARN] Could not detect prototypes for {mod}, using fallback 512.")
-            num_protos_mod = 512
-            
+        if num_protos_mod == 0: num_protos_mod = 512
         modality_offsets[mod] = (current_offset, current_offset + num_protos_mod)
         current_offset += num_protos_mod
         
@@ -181,13 +155,14 @@ def visualize_topk(net, projectloader, num_classes, device, foldername, args, sa
             if start <= p_idx < end:
                 return mod, p_idx - start
         return None, 0
+    # ------------------------------
 
     net.eval()
     classification_weights = net.module._classification.weight
 
+    # === STEG 1: SÖK EFTER TOP K ===
     desc_text = f"Search top{k}"
     img_iter = tqdm(enumerate(projectloader), total=len(projectloader), desc=desc_text, mininterval=2., ncols=0)
-    
     topks = dict()
     
     for i, (xs, ms, ys) in img_iter:
@@ -200,12 +175,9 @@ def visualize_topk(net, projectloader, num_classes, device, foldername, args, sa
             pooled = pooled.squeeze(0)
             
             for p in range(pooled.shape[0]):
-                # if True:
                 c_weight = torch.max(classification_weights[:, p])
-                # ignore prototypes that are not relevant to any class
                 if c_weight > 1e-3: 
                     if p not in topks.keys(): topks[p] = []
-                    
                     if len(topks[p]) < k:
                         topks[p].append((i, pooled[p].item())) 
                     else:
@@ -213,23 +185,20 @@ def visualize_topk(net, projectloader, num_classes, device, foldername, args, sa
                         if topks[p][-1][1] < pooled[p].item():
                             topks[p][-1] = (i, pooled[p].item())
                         if topks[p][-1][1] == pooled[p].item():
-                            if random.choice([0, 1]) > 0:
-                                topks[p][-1] = (i, pooled[p].item())
+                            if random.choice([0, 1]) > 0: topks[p][-1] = (i, pooled[p].item())
 
     alli = [] 
     prototypes_not_used = []
-    
     for p in topks.keys():
         found = False
         for idx, score in topks[p]:
             alli.append(idx)
             if score > 0.0001: found = True
-        
-        if not found:
-            prototypes_not_used.append(p)
+        if not found: prototypes_not_used.append(p)
             
     abstained = 0
     
+    # === STEG 2: LOKALISERA OCH SPARA PATCHES ===
     desc_text = f"Localize"
     img_iter = tqdm(enumerate(projectloader), total=len(projectloader), desc=desc_text, mininterval=2., ncols=0)
     
@@ -252,6 +221,12 @@ def visualize_topk(net, projectloader, num_classes, device, foldername, args, sa
                             target_mod, local_p = get_modality_for_proto(p)
                             if target_mod is None: continue
                             
+                            img_tensor = xs[target_mod].cpu()
+
+                            # 1. Hoppa över om bilden är tom (missing modality)
+                            if img_tensor.max() <= img_tensor.min() + 1e-9:
+                                continue
+
                             softmaxes = softmaxes_dict[target_mod]
                             max_per_prototype, max_idx_per_prototype = torch.max(softmaxes, dim=0) 
                             max_per_prototype_hw, max_idx_per_prototype_hw = torch.max(max_per_prototype, dim=1) 
@@ -262,56 +237,86 @@ def visualize_topk(net, projectloader, num_classes, device, foldername, args, sa
                             h_idx = max_idx_per_prototype_h[local_p, max_idx_per_prototype_w[local_p]].item()
                             w_idx = max_idx_per_prototype_w[local_p].item()
                             
-                            img_path = dataset_paths[target_mod][i]
-                            img_tensor = load_and_preprocess_image(img_path, args, modality=target_mod, use_cache=True) 
+                            if img_tensor.shape[1] == 1:
+                                img_tensor = img_tensor.repeat(1, 3, 1, 1, 1)
                             
-                            ps_coord = get_img_coordinates(args.slices, args.rows, args.cols, softmaxes.shape, patchsize, skip_z, skip_y, skip_x, d_idx, h_idx, w_idx)
+                            # --- 2. HÄMTA FAKTISKA DIMENSIONER ---
+                            curr_slices = img_tensor.shape[2]
+                            curr_rows = img_tensor.shape[3]
+                            curr_cols = img_tensor.shape[4]
+                            
+                            # --- 3. BERÄKNA PATCH SIZE FÖR DENNA BILD ---
+                            # Använd den nya funktionen här!
+                            patchsize, skip_z, skip_y, skip_x = get_patch_size_dynamic((curr_slices, curr_rows, curr_cols), args)
+                            
+                            # --- 4. BERÄKNA KOORDINATER MED LOKALA DIMENSIONER ---
+                            # Skicka in curr_slices etc istället för args.slices
+                            ps_coord = get_img_coordinates(
+                                curr_slices, curr_rows, curr_cols, 
+                                softmaxes.shape, 
+                                patchsize, skip_z, skip_y, skip_x, 
+                                d_idx, h_idx, w_idx
+                            )
+                            
                             d_min, d_max, h_min, h_max, w_min, w_max = ps_coord
                             
+                            # --- 5. VALIDERA ATT PATCHEN ÄR GILTIG ---
+                            if (d_max <= d_min) or (h_max <= h_min) or (w_max <= w_min):
+                                continue
+
+                            img_path = dataset_paths[target_mod][i]
                             img_tensor_patch = img_tensor[0, :, d_min:d_max, h_min:h_max, w_min:w_max]
                                     
                             saved[p]+=1
                             tensors_per_prototype[p].append(img_tensor_patch.numpy())
-                            img_prototype[p].append((img_path, target_mod))
+                            img_prototype_info[p].append((i, target_mod, img_path))
                             proto_coord[p].append(ps_coord)
                                 
 
     print("Abstained: ", abstained, flush = True)
-    all_tensors = []
     
+    # === STEG 3: PLOTTA ===
     for p in tqdm(range(num_prototypes), desc="Processing prototypes"):
         if saved[p] > 0:
             text = "f_" + str(args.current_fold) + "_p_" + str(p)
             
-            for (img_name, mod), tensor, ps_coord in zip(img_prototype[p], tensors_per_prototype[p], proto_coord[p]):
-                img_tensor = load_and_preprocess_image(img_name, args, modality=mod, use_cache=False)
-                d_min, d_max, h_min, h_max, w_min, w_max = ps_coord
+            for (dataset_idx, mod, img_name), tensor, ps_coord in zip(img_prototype_info[p], tensors_per_prototype[p], proto_coord[p]):
+                
+                try:
+                    inputs_dict, _, _ = projectloader.dataset[dataset_idx]
+                    img_tensor_raw = inputs_dict[mod]
+                    
+                    if img_tensor_raw.max() <= img_tensor_raw.min() + 1e-9:
+                        continue
 
+                    img_tensor = img_tensor_raw.unsqueeze(0) 
+                    if img_tensor.shape[1] == 1:
+                        img_tensor = img_tensor.repeat(1, 3, 1, 1, 1)
+                        
+                except Exception as e:
+                    print(f"[ERROR] Could not fetch index {dataset_idx}: {e}")
+                    continue
+
+                d_min, d_max, h_min, h_max, w_min, w_max = ps_coord
+                
+                # Använd mask-funktionen. Den borde nu vara säker eftersom koordinaterna
+                # är baserade på bildens verkliga storlek.
                 spatial_mask = create_edge_mask_spatial(img_tensor.shape, d_min, d_max, h_min, h_max, w_min, w_max)
+                
                 img_tensor[:, 0:1][spatial_mask] = 1.0
                 img_tensor[:, 1:2][spatial_mask] = 1.0
                 img_tensor[:, 2:3][spatial_mask] = 1.0
                 
                 image = img_tensor.detach().cpu().numpy() 
 
-                # --- FIX: RÄTT NAMNHANTERING OAVSETT MRI/AMY ---
                 try:
                     img_str = str(img_name)
-                    # 1. Hitta Subjekt (XXX_S_XXXX)
                     match_subj = _pattern_subj.search(img_str)
-                    if match_subj:
-                        subj = match_subj.group(1) # Hela matchningen XXX_S_XXXX
-                    else:
-                        subj = "UnkSubj"
-                    
-                    # 2. Hitta Exam ID (Filnamn minus extension)
-                    # Detta fungerar för BÅDE "d26eb..." och "I1598943"
+                    subj = match_subj.group(1) if match_subj else "UnkSubj"
                     base_name = os.path.basename(img_str)
                     exam, _ = os.path.splitext(base_name)
-                    
                 except:
                     subj, exam = "unknown", "unknown"
-                # -----------------------------------------------
                     
                 ps_name = text + "_" + mod + "_" + subj + "_" + exam
                 ps_patch_name = text + "_" + mod + "_patch_" + subj + "_" + exam
@@ -321,6 +326,9 @@ def visualize_topk(net, projectloader, num_classes, device, foldername, args, sa
                 
                 if plot:
                     try:
+                        if np.all(image == 0) or np.any(np.array(image.shape) == 0):
+                             continue
+
                         plot_rgb_slices(image[0,:,:,:,:], title = f"Proto {p} ({mod})", num_columns = 10, bottom=True, save_path=plot_name)   
                         plot_rgb_slices(tensor[:,:,:,:], title = f"Proto {p} Patch", num_columns = 6, bottom=True, save_path=plot_patch_name)
                     except Exception as e:
@@ -329,12 +337,8 @@ def visualize_topk(net, projectloader, num_classes, device, foldername, args, sa
                 if save:
                     np.save(os.path.join(save_dir, ps_name), image[0,:,:,:,:])
                     np.save(os.path.join(save_dir, ps_patch_name), tensor[:,:,:,:])
-                        
-                if saved[p] >= k:
-                    all_tensors += tensors_per_prototype[p]
 
-    return topks, img_prototype, proto_coord
-
+    return topks, img_prototype_info, proto_coord
 
 def plot_local_explanation(xs, local_explanation, modality_offsets, title="", save_path=None):
     if not isinstance(xs, dict):
@@ -353,9 +357,7 @@ def plot_local_explanation(xs, local_explanation, modality_offsets, title="", sa
                 target_mod = mod
                 break
         
-        if target_mod is None:
-            print(f"[WARN] Prototype index {ps_idx} unknown offset.")
-            continue
+        if target_mod is None: continue
 
         if target_mod not in modalities_to_plot:
             modalities_to_plot[target_mod] = []

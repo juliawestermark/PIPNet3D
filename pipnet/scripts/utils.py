@@ -31,10 +31,11 @@ def get_args(
     Utility functions for handling parsed arguments """
 
     net_dic = {"resnet3D_18_kin400":3, "convnext3D_tiny":1}
-    dic_classes = {"CN":0, "AD":1} # {"CN":0, "MCI": 1, "AD":2}
-    #dic_classes = {"CN":0, "MCI": 1, "AD":2}
-    #modalities = ['mri']
-    modalities = ['mri', 'amy']
+    #dic_classes = {"CN":0, "AD":1} # {"CN":0, "MCI": 1, "AD":2}
+    dic_classes = {"CN":0, "MCI": 1, "AD":2}
+    modalities = ['mri']
+    # modalities = ['amy']
+    #modalities = ['mri', 'amy']
 
     #root_folder = "/home/maia-user/PIPNet3D/"
     root_folder = "/proj/berzbiomedicalimagingkth/users/x_julwe/PIPNet3D/"
@@ -49,16 +50,24 @@ def get_args(
 
     global_mask_paths = {}
     
-    for mod in modalities:
-        # Bygg sökvägen automatiskt
-        mask_path = os.path.join(dataset_path, "masks", mod, "global_mask.npy")
-        # Spara i dicten
-        global_mask_paths[mod] = mask_path
+    # for mod in modalities:
+    #     # Bygg sökvägen automatiskt
+    #     mask_path = os.path.join(dataset_path, "masks", mod, "global_mask.npy")
+    #     # Spara i dicten
+    #     global_mask_paths[mod] = mask_path
     n_fold = 5           # Number of fold
     test_split = 0.2
     seed = 42            # seed for reproducible shuffling
     
-    downscaling = 4
+    downscaling = 2
+    # rows = 169
+    # cols = 208
+    # slices = 179
+    modality_shape = {
+        # 'mri': (169, 208, 179),
+        'mri': (179, 169, 208),
+        'amy': (128, 128, 128),  # TODO: Change values
+    }
     
     channels = net_dic[net]
     num_age_prototypes = 5
@@ -67,8 +76,8 @@ def get_args(
     task_performed_name = f"{task_performed}_{model_name}_{downscaling}"
     experiment_folder = os.path.join(root_folder, "results", task_performed_name, net, "fold_" + str(current_fold))
     
-    batch_size_pretrain = 16 #16 # 2
-    batch_size = 16 #16 # 2
+    batch_size_pretrain = 12 #16 # 2
+    batch_size = 12 #16 # 2
     epochs_pretrain = 20 #10 # 1
     epochs = 60 #60 # 2
     optimizer = "Adam"
@@ -88,6 +97,7 @@ def get_args(
     parser.add_argument('--dataset_path', type = str, default = dataset_path, help = 'Folders path of preprocessed images')
     parser.add_argument('--metadata_path', type = str, default = metadata_path, help = 'Path of .csv metadata file')  
     parser.add_argument('--downscaling', type = int, default = downscaling, help = 'Subsampling factor')
+    parser.add_argument('--mod_shape', type = tuple, default = modality_shape, help = 'Shape of the input volume passed to the network (slices,rows,cols ??)')
     parser.add_argument('--channels', type = int, default = channels, help = 'N° of channel of the input volume passed to the network')
     parser.add_argument('--dic_classes', type = dict, default = dic_classes, help = 'Dictionary "labels": class_id')
     parser.add_argument('--num_classes', type = int, default = num_classes, help = 'Subsampling factor')
