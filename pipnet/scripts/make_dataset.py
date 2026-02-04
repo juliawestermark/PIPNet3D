@@ -398,15 +398,17 @@ def get_brains(dataset_path, metadata_path, target_shapes, channels, dic_classes
         if stage == 'train':
             return Compose([
                 Resize(spatial_size=target_shape),
-                RandAffine(
-                    prob=aug_prob,
-                    rotate_range=(rand_rot_rad, rand_rot_rad, rand_rot_rad),
-                    translate_range=(rand_shift, rand_shift, rand_shift),
-                    scale_range=(scale_dev, scale_dev, scale_dev),
-                    mode='bilinear',       # Snabbare än bicubic
-                    padding_mode='zeros',  # Fyller tomrum med svart
-                    cache_grid=True        # Snabbar upp beräkningen om input-storleken är konstant
-                ),
+                # RandAffine(
+                #     prob=aug_prob,
+                #     rotate_range=(rand_rot_rad, rand_rot_rad, rand_rot_rad),
+                #     translate_range=(rand_shift, rand_shift, rand_shift),
+                #     scale_range=(scale_dev, scale_dev, scale_dev),
+                #     mode='bilinear',       # Snabbare än bicubic
+                #     padding_mode='zeros',  # Fyller tomrum med svart
+                #     spatial_size=target_shape, 
+                #     cache_grid=True # Nu fungerar cachingen korrekt!
+                #     # cache_grid=True        # Snabbar upp beräkningen om input-storleken är konstant
+                # ),
                 # RandRotate(range_x=rand_rot_rad, range_y=rand_rot_rad, range_z=rand_rot_rad, prob=aug_prob),
                 # # RandGaussianNoise(std=0.01, prob=aug_prob),
                 # Affine(translate_params=(rand_shift, rand_shift, rand_shift), image_only=True),
