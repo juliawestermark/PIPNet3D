@@ -38,41 +38,30 @@ from sklearn.model_selection import StratifiedKFold
 from make_mm_dataset import load_npy_dataset
 
 
-def crop_fixed_rectangular(image_volume, target_shape, threshold_percent=0.05):
+def crop_fixed_rectangular(image_volume, target_shape, threshold_percent=None):
     """
-    Centrerar hjärnan och tvingar fram en specifik form (target_shape).
+    Supersnabb Center Crop.
+    Eftersom datan är 'Aligned' vet vi att hjärnan är i mitten.
+    Vi behöver inte söka efter den.
     """
-    # 1. Hitta hjärnan (Thresholding)
-    max_val = np.max(image_volume)
-    if max_val == 0: return np.zeros(target_shape, dtype=image_volume.dtype)
     
-    mask = image_volume > (max_val * threshold_percent)
-    if not np.any(mask): mask = image_volume > 0 
-    
-    coords = np.where(mask)
-    
-    # Hantera (C, D, H, W) vs (D, H, W)
+    # 1. Hämta dimensioner
     if image_volume.ndim == 4:
-        z_idx, y_idx, x_idx = coords[1], coords[2], coords[3]
+        # (C, D, H, W)
         vol_dims = image_volume.shape[1:]
     else:
-        z_idx, y_idx, x_idx = coords[0], coords[1], coords[2]
+        # (D, H, W)
         vol_dims = image_volume.shape
 
-    if len(z_idx) == 0: return np.zeros(target_shape, dtype=image_volume.dtype)
-
-    # 2. Hitta mitten på hjärnan
-    z_min, z_max = np.min(z_idx), np.max(z_idx)
-    y_min, y_max = np.min(y_idx), np.max(y_idx)
-    x_min, x_max = np.min(x_idx), np.max(x_idx)
-
-    center_z = z_min + (z_max - z_min) // 2
-    center_y = y_min + (y_max - y_min) // 2
-    center_x = x_min + (x_max - x_min) // 2
-
-    # 3. Beräkna boxens gränser utifrån TARGET_SHAPE
+    d_in, h_in, w_in = vol_dims
     tgt_d, tgt_h, tgt_w = target_shape
-    
+
+    # 2. Beräkna mitten direkt (Matematiskt center)
+    center_z = d_in // 2
+    center_y = h_in // 2
+    center_x = w_in // 2
+
+    # 3. Beräkna start- och slutpunkter för crop-boxen
     z_start = center_z - tgt_d // 2
     y_start = center_y - tgt_h // 2
     x_start = center_x - tgt_w // 2
@@ -81,28 +70,30 @@ def crop_fixed_rectangular(image_volume, target_shape, threshold_percent=0.05):
     y_end = y_start + tgt_h
     x_end = x_start + tgt_w
 
-    # 4. Klipp och Paddda (Source -> Destination)
-    d_in, h_in, w_in = vol_dims
-    
+    # 4. Hantera gränser (Om boxen går utanför bilden, eller bilden är mindre än boxen)
+    # Source (Bildens koordinater)
     src_z_start = max(0, z_start); src_z_end = min(d_in, z_end)
     src_y_start = max(0, y_start); src_y_end = min(h_in, y_end)
     src_x_start = max(0, x_start); src_x_end = min(w_in, x_end)
     
+    # Destination (Den nya boxens koordinater)
     dst_z_start = max(0, -z_start)
     dst_y_start = max(0, -y_start)
     dst_x_start = max(0, -x_start)
     
-    # 5. Skapa och fyll volymen
+    # 5. Skapa och fyll volymen (Kopiera data)
+    dtype = image_volume.dtype
+    
     if image_volume.ndim == 4:
         c = image_volume.shape[0]
-        out_vol = np.zeros((c, tgt_d, tgt_h, tgt_w), dtype=image_volume.dtype)
+        out_vol = np.zeros((c, tgt_d, tgt_h, tgt_w), dtype=dtype)
         out_vol[:, 
                 dst_z_start : dst_z_start + (src_z_end - src_z_start),
                 dst_y_start : dst_y_start + (src_y_end - src_y_start),
                 dst_x_start : dst_x_start + (src_x_end - src_x_start)] = \
         image_volume[:, src_z_start : src_z_end, src_y_start : src_y_end, src_x_start : src_x_end]
     else:
-        out_vol = np.zeros((tgt_d, tgt_h, tgt_w), dtype=image_volume.dtype)
+        out_vol = np.zeros((tgt_d, tgt_h, tgt_w), dtype=dtype)
         out_vol[dst_z_start : dst_z_start + (src_z_end - src_z_start),
                 dst_y_start : dst_y_start + (src_y_end - src_y_start),
                 dst_x_start : dst_x_start + (src_x_end - src_x_start)] = \
@@ -405,10 +396,10 @@ def get_brains(dataset_path, metadata_path, target_shapes, channels, dic_classes
         if stage == 'train':
             return Compose([
                 Resize(spatial_size=target_shape),
-                # RandRotate(range_x=rand_rot_rad, range_y=rand_rot_rad, range_z=rand_rot_rad, prob=aug_prob),
+                RandRotate(range_x=rand_rot_rad, range_y=rand_rot_rad, range_z=rand_rot_rad, prob=aug_prob),
                 # RandGaussianNoise(std=0.01, prob=aug_prob),
-                # Affine(translate_params=(rand_shift, rand_shift, rand_shift), image_only=True),
-                # RandZoom(min_zoom=min_zoom, max_zoom=max_zoom, prob=aug_prob),
+                Affine(translate_params=(rand_shift, rand_shift, rand_shift), image_only=True),
+                RandZoom(min_zoom=min_zoom, max_zoom=max_zoom, prob=aug_prob),
                 RepeatChannel(repeats=channels),
             ])
         else: # val, test, noaug
