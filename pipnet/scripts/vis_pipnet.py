@@ -302,10 +302,10 @@ def visualize_topk(net, projectloader, num_classes, device, foldername, args, sa
                 # Använd mask-funktionen. Den borde nu vara säker eftersom koordinaterna
                 # är baserade på bildens verkliga storlek.
                 spatial_mask = create_edge_mask_spatial(img_tensor.shape, d_min, d_max, h_min, h_max, w_min, w_max)
-                
-                img_tensor[:, 0:1][spatial_mask] = 1.0
-                img_tensor[:, 1:2][spatial_mask] = 1.0
-                img_tensor[:, 2:3][spatial_mask] = 1.0
+
+                img_tensor[:, 0:1][spatial_mask] = 1.0  # Röd kanal = Max
+                img_tensor[:, 1:2][spatial_mask] = 0.0  # Grön kanal = 0
+                img_tensor[:, 2:3][spatial_mask] = 0.0  # Blå kanal = 0
                 
                 image = img_tensor.detach().cpu().numpy() 
 
