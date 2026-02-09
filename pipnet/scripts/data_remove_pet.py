@@ -13,10 +13,10 @@ def clean_and_prune(output_root, folder_to_remove):
     print(f"Scannar {len(subjects)} subjects i {output_root}...")
 
     # Bekräfta innan start
-    confirm = input(f"Detta kommer radera alla '{folder_to_remove}'-mappar och ta bort subject-mappen om den blir tom. Fortsätt? (ja/nej): ")
-    if confirm.lower() != "ja":
-        print("Avbryter.")
-        return
+    # confirm = input(f"Detta kommer radera alla '{folder_to_remove}'-mappar och ta bort subject-mappen om den blir tom. Fortsätt? (ja/nej): ")
+    # if confirm.lower() != "ja":
+    #     print("Avbryter.")
+    #     return
 
     removed_amy_count = 0
     removed_subject_count = 0
