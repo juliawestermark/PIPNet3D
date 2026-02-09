@@ -48,8 +48,8 @@ def clean_and_prune(output_root, folder_to_remove):
     print("Klart!")
 
 if __name__ == "__main__":
-    output_root = "/home/maia-user/ADNI_npy"
-    #output_root = "/proj/berzbiomedicalimagingkth/users/x_julwe/ADNI_npy"
+    #output_root = "/home/maia-user/ADNI_npy"
+    output_root = "/proj/berzbiomedicalimagingkth/users/x_julwe/ADNI_npy"
     folder_to_remove = "amy"
 
     clean_and_prune(output_root, folder_to_remove)
