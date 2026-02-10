@@ -2,101 +2,85 @@ import pandas as pd
 import os
 from pathlib import Path
 import re
-from datetime import datetime
 
-
-def find_pet_file(individual_id, exam_id, exam_date, identifier, adni_path):
-    pet_path = Path(adni_path)
-    string_date = exam_date.strftime("%Y%m%d")
-    search_path = pet_path / individual_id
-    pattern = f"*{identifier}*{string_date}*.nii.gz"
-    # pattern = rf"*{exam_id}*.nii.gz"
-    # pattern = rf"{exam_id}.*{amy_identifier}.*\.nii\.gz"
-    # print(f"Söker i: {search_path}, mönster: {pattern}")
-    matches = list(search_path.glob(pattern))
-    # if len(matches) > 1:
-    #     print(f"Varning: Flera träffar för {individual_id}, {exam_id}: {matches}")
-    # matches = [f for f in search_path.rglob("*.nii.gz") if re.search(pattern, f.name)]
-    if matches:
-        return str(matches[0])
-    return None
-
-
-def setup_pet_dataframe(identifier="AV45", adni_path="/home/maia-user/ADNI_PET/ADNI", adni_pet_file_name="UCBERKELEY_AMY_6MM_02Apr2025.csv"):
-    # amy_csv_file = "/home/maia-user/ADNI_PET/ADNI/UCBERKELEY_AMY_6MM_02Apr2025.csv"
-    # tau_csv_file = "/home/maia-user/ADNI_PET/ADNI/UCBERKELEY_TAU_6MM_02Apr2025.csv"
-    adni_file_path = os.path.join(adni_path, adni_pet_file_name)
-    pet_csv = pd.read_csv(adni_file_path, dtype={"VISCODE": str, "LONIUID": str, "PTID": str})
-    # amy_csv.head()
-    pet = pet_csv[[
-        "LONIUID", 
-        "VISCODE", 
-        "PTID", 
-        "SCANDATE",
-        # "PROCESSDATE"
-    ]].rename(columns={
-        "LONIUID": "exam_id",
-        "VISCODE": "viscode",
-        "PTID": "individual_id",
-        "SCANDATE": "exam_date",
-        # "PROCESSDATE": "process_date"
-    }).copy()
-    pet["exam_date"] = pd.to_datetime(pet["exam_date"], errors='coerce')
-
-    pet["file_path"] = pet.apply(
-        lambda row: find_pet_file(row["individual_id"], row["exam_id"], row["exam_date"], identifier, adni_path=adni_path), axis=1
-    )
-
-    pet_df = pet[pet["file_path"].notna()].copy()
-
-    return pet_df
-
-def build_npy_file_path(row, preprocessed_root, pet_type):
+def create_pet_dataframe_from_filesystem(adni_path):
     """
-    Bygger paths till .npy och omvandlar clinical_stage → label.
-    Returnerar:
-        X_paths : np.array med paths
-        y       : np.array med int labels
+    Skannar mappstrukturen:
+    ROOT / SubjectID / Tracer_Coreg... / YYYY-MM-DD_... / fil.nii.gz
+    
+    Returnerar en DataFrame med kolumnerna:
+    [individual_id, exam_id, exam_date, tracer, file_path, included]
     """
+    root = Path(adni_path)
+    data_records = []
+    
+    # Hämta alla subject-mappar
+    # Vi kollar bara mappar som faktiskt ser ut som Subject ID (XXX_S_XXXX)
+    subjects = sorted([p for p in root.iterdir() if p.is_dir()])
+    
+    print(f"[INFO] Skannar {len(subjects)} patient-mappar i {adni_path}...")
 
-    subject = row["Individual's ID"]
-    exam_id = row["Output collection GUID"]
+    for subj_dir in subjects:
+        subject_id = subj_dir.name
+        
+        if not re.match(r'\d{3}_S_\d+', subject_id):
+            continue
 
-    npy_path = os.path.join(
-        preprocessed_root,
-        subject,
-        pet_type,
-        f"{exam_id}.npy"
-    )
+        # Loopa igenom undermappar (Beskrivning/Tracer)
+        for desc_dir in subj_dir.iterdir():
+            if not desc_dir.is_dir(): continue
+            
+            dir_name = desc_dir.name
+            
+            # Identifiera Tracer (AV45 eller FBB)
+            tracer = None
+            if "AV45" in dir_name:
+                tracer = "AV45"
+            elif "FBB" in dir_name:
+                tracer = "FBB"
+            
+            # Om det inte är en mapp vi bryr oss om (måste vara Coreg), hoppa över
+            if tracer is None or "Coreg" not in dir_name:
+                continue
 
-    return npy_path
+            # Loopa igenom Datum-mappar
+            for date_dir in desc_dir.iterdir():
+                if not date_dir.is_dir(): continue
+                
+                # Mappnamn är typ: "2025-10-30_15_40_09.0" -> "2025-10-30"
+                date_str_raw = date_dir.name.split('_')[0]
+                
+                try:
+                    # Validera att det är ett datum
+                    pd.to_datetime(date_str_raw)
+                except:
+                    continue
 
-def setup_npy_pet_dataframe(adni_path="/home/maia-user/ADNI_npy", adni_pet_file_name="UCBERKELEY_AMY_6MM_02Apr2025.csv", pet_type="amy"):
-    # amy_csv_file = "/home/maia-user/ADNI_PET/ADNI/UCBERKELEY_AMY_6MM_02Apr2025.csv"
-    # tau_csv_file = "/home/maia-user/ADNI_PET/ADNI/UCBERKELEY_TAU_6MM_02Apr2025.csv"
-    adni_file_path = os.path.join(adni_path, adni_pet_file_name)
-    pet_csv = pd.read_csv(adni_file_path, dtype={"VISCODE": str, "LONIUID": str, "PTID": str})
-    # amy_csv.head()
-    pet = pet_csv[[
-        "LONIUID", 
-        "VISCODE", 
-        "PTID", 
-        "SCANDATE",
-        # "PROCESSDATE"
-    ]].rename(columns={
-        "LONIUID": "exam_id",
-        "VISCODE": "viscode",
-        "PTID": "individual_id",
-        "SCANDATE": "exam_date",
-        # "PROCESSDATE": "process_date"
-    }).copy()
-    pet["exam_date"] = pd.to_datetime(pet["exam_date"], errors='coerce')
+                # Hitta själva .nii.gz filen (rekursivt i datum-mappen)
+                nifti_files = list(date_dir.rglob("*.nii.gz"))
+                
+                if not nifti_files:
+                    continue
+                
+                # Ta den första filen
+                file_path = str(nifti_files[0])
+                
+                # SKAPA ETT UNIKT ID (Ersätter det gamla LONIUID)
+                # Format: Subject_Tracer_Datum (t.ex. 381_S_10563_FBB_2025-10-30)
+                synthetic_exam_id = f"{subject_id}_{tracer}_{date_str_raw}"
 
-    # pet["file_path"] = pet.apply(
-    #     lambda row: find_pet_file(row["individual_id"], row["exam_id"], row["exam_date"], identifier, adni_path=adni_path), axis=1
-    # )
-    pet["file_path"] = pet.apply(build_npy_file_path, args=(adni_path, pet_type), axis=1)
+                data_records.append({
+                    "individual_id": subject_id,
+                    "exam_id": synthetic_exam_id,
+                    "exam_date": pd.to_datetime(date_str_raw),
+                    "tracer": tracer,
+                    "viscode": None, # Vi vet inte viscode utan DXSUM-matchning än
+                    "file_path": None,
+                    "included": True
+                })
 
-    pet_df = pet[pet["file_path"].notna()].copy()
-
-    return pet_df
+    df = pd.DataFrame(data_records)
+    print("\n--- Resultat ---")
+    print(f"[INFO] Hittade totalt {len(df)} PET-bilder.")
+    print(f"Fördelning tracers:\n{df['tracer'].value_counts()}")
+    return df

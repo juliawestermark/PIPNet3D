@@ -25,7 +25,7 @@ from tqdm.auto import tqdm
 import pandas as pd
 
 # Regex för att hitta Subject ID i filnamn
-_pattern_subj = re.compile(r"(\d{3}_S_\d{4})")
+_pattern_subj = re.compile(r"(\d{3}_S_\d+)")
 
 def create_edge_mask_spatial(img_shape, d_min, d_max, h_min, h_max, w_min, w_max):
     # img_shape är (1, 1, D, H, W) eller (1, 3, D, H, W)

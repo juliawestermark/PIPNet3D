@@ -1,6 +1,5 @@
 import os
 import pandas as pd
-from pathlib import Path
 
 v_map = {
     "v02": 0,
@@ -14,22 +13,12 @@ v_map = {
     "v51": 12*5,
 }
 
-def build_file_path(row: pd.Series, data_path, mri_filename) -> str:
-    """Build the file path for a given row in the dataframe."""
-    guid = row["Output collection GUID"]
-    file_path = os.path.join(data_path, guid, mri_filename)
-    return file_path
-
-def build_mri_npy_file_path(row, preprocessed_root, image_type):
+def build_mri_npy_file_path(row, preprocessed_root, image_type="mri"):
     """
-    Bygger paths till .npy och omvandlar clinical_stage → label.
-    Returnerar:
-        X_paths : np.array med paths
-        y       : np.array med int labels
+    Bygger sökväg till MRI .npy-filen: <root>/<subject>/mri/<exam_id>.npy
     """
-
-    subject = row["Individual's ID"]
-    exam_id = row["Output collection GUID"]
+    subject = row["individual_id"]
+    exam_id = row["exam_id"]
 
     npy_path = os.path.join(
         preprocessed_root,
@@ -37,23 +26,35 @@ def build_mri_npy_file_path(row, preprocessed_root, image_type):
         image_type,
         f"{exam_id}.npy"
     )
+    return npy_path
 
+def build_pet_npy_file_path(row, preprocessed_root, pet_type="amy"):
+    """
+    Bygger sökväg till PET .npy-filen: <root>/<subject>/amy/<exam_id>.npy
+    """
+    subject = row["individual_id"]
+    exam_id = row["exam_id"]
+
+    npy_path = os.path.join(
+        preprocessed_root,
+        subject,
+        pet_type,
+        f"{exam_id}.npy"
+    )
     return npy_path
 
 def _get_first_entry(subject_data, viscode: str, column: str):
     entries = subject_data[subject_data["VISCODE2"] == viscode]
     if entries.empty:
         return pd.NA
-    if len(entries) > 1:
-        logger.warning("Multiple %s entries for subject %s", viscode, subject_data["individual_id"].iloc[0])
+    # if len(entries) > 1:
+        # logger.debug("Multiple %s entries for subject %s", viscode, subject_data["individual_id"].iloc[0])
     return entries.iloc[0][column]
 
-
 def get_baseline_date_for_subject(subject_id: str, dxsum: pd.DataFrame) -> pd.Timestamp:
-    """Get the baseline date for a given subject ID."""
+    """Hämtar baseline-datum för en patient."""
     subject_data = dxsum[dxsum["individual_id"] == subject_id]
     if subject_data.empty:
-        logger.warning(f"No data found for subject {subject_id}.")
         return pd.NaT
     
     date = _get_first_entry(subject_data, "bl", "EXAMDATE")
@@ -66,323 +67,235 @@ def get_baseline_date_for_subject(subject_id: str, dxsum: pd.DataFrame) -> pd.Ti
 
     return date
 
-
 def get_months_from_baseline(timepoint: str) -> float:
-    """Convert timepoint string to months from baseline."""
-
+    """Konverterar timepoint-sträng (t.ex. 'm24') till antal månader (float)."""
     if pd.isna(timepoint):
         return pd.NA
-    if timepoint in ["sc", "init"]:
+    
+    tp = str(timepoint).lower()
+    
+    if tp in ["sc", "init", "bl"]:
         return 0
-    if timepoint == "bl":
-        return 0
-    if timepoint.startswith("m"):
+    if tp.startswith("m"):
         try:
-            return int(timepoint[1:])
+            return int(tp[1:])
         except ValueError:
             return pd.NA
-    if timepoint.startswith("y"):
+    if tp.startswith("y"):
         try:
-            years = int(timepoint[1:])
+            years = int(tp[1:])
             return years * 12
         except ValueError:
             return pd.NA
-    if timepoint.startswith("v"):
-        if timepoint in v_map:
-            return v_map[timepoint]
+    if tp.startswith("v"):
+        if tp in v_map:
+            return v_map[tp]
     if timepoint in ["tau"]:
         return pd.NA
     return pd.NA
 
-
 def get_session_date(row: pd.Series) -> pd.Timestamp:
-    """Calculate the session date based on baseline date and months from baseline."""
-    baseline_date = row["baseline_date"]
-    months_from_bl = row["months_from_baseline"]
+    """Räknar ut besöksdatum baserat på baseline + månader om exam_date saknas."""
+    if pd.notna(row.get("exam_date")):
+        return row["exam_date"]
+
+    baseline_date = row.get("baseline_date")
+    months_from_bl = row.get("months_from_baseline")
+    
     if pd.isna(baseline_date) or pd.isna(months_from_bl):
-        logger.warning(f"Missing data for row {row.name} for subject {row['individual_id']}: baseline_date={baseline_date}, months_from_baseline={months_from_bl}")
-        # detta är de som är tau istället för tidsperiod
         return pd.NA
+        
     try:
         session_date = baseline_date + pd.DateOffset(months=months_from_bl)
         return session_date
-    except Exception as e:
-        logger.warning(f"Error calculating session date for row {row.name}: {e}")
+    except Exception:
         return pd.NA
 
-def load_mri_csv(mode="npy", adni_path="/home/maia-user/ADNI_npy"):
-
+# -----------------------------------------------------------------------------
+# LOAD MRI
+# -----------------------------------------------------------------------------
+def load_mri_csv(adni_path="/home/maia-user/ADNI_npy"):
+    """
+    Laddar MRI-data baserat på OutputCollection.csv.
+    """
     expected_cols = ["exam_id", "individual_id", "time_point", "file_path", "baseline_date", "months_from_baseline", "exam_date"]
-
-    if mode == "nii":
-        DATA_PATH = os.path.join(adni_path, "adni")
-        COLLECTION_PATH = os.path.join(adni_path, "OutputCollection.csv")
-        DXSUM_PATH = os.path.join(adni_path, "DXSUM_PDXCONV_ADNIALL.csv")
-        MRI_FILENAME = "mri/rescaled_align_norm.nii.gz"
-    elif mode == "npy":
-        COLLECTION_PATH = os.path.join(adni_path, "csv", "OutputCollection.csv")
-        DXSUM_PATH = os.path.join(adni_path, "csv", "DXSUM_PDXCONV_ADNIALL.csv")
-    else:
-        raise ValueError(f"mode {mode} is not implemented.")
     
-    if not os.path.exists(COLLECTION_PATH) or not os.path.exists(DXSUM_PATH):
-        print(f"[WARN] MRI CSV files not found at {COLLECTION_PATH}. Returning empty DataFrame.")
+    COLLECTION_PATH = os.path.join(adni_path, "csv", "OutputCollection.csv")
+    DXSUM_PATH = os.path.join(adni_path, "csv", "DXSUM_10Feb2026.csv")
+    
+    if not os.path.exists(COLLECTION_PATH):
+        print(f"[WARN] MRI CSV not found at {COLLECTION_PATH}. Returning empty DataFrame.")
         return pd.DataFrame(columns=expected_cols)
     
-    # -- Load csv --
+    # Load csv
     csv_output_collection = pd.read_csv(COLLECTION_PATH)
     csv_dxsum = pd.read_csv(DXSUM_PATH)
+    valid_ptids = set(csv_dxsum["PTID"])
+    # Load dxsum for validation (optional but good practice)
+    # if os.path.exists(DXSUM_PATH):
+    #     csv_dxsum = pd.read_csv(DXSUM_PATH)
+    #     valid_ptids = set(csv_dxsum["PTID"])
+    # else:
+    #     valid_ptids = set(csv_output_collection["Individual's ID"]) # Fallback
 
-    # -- Build filepath and inclusion flags --
-    if mode == "nii":
-        csv_output_collection["file_path"] = csv_output_collection.apply(build_file_path, args=(DATA_PATH, MRI_FILENAME), axis=1)
-    else:
-        csv_output_collection["file_path"] = csv_output_collection.apply(build_mri_npy_file_path, args=(adni_path,"mri"), axis=1)
-    
-    csv_output_collection["included"] = (
-        (csv_output_collection["Job status"] == "completed")
-        & csv_output_collection["file_path"].apply(os.path.exists)
-        & (csv_output_collection["TimePoint"] != "tau")
-        & csv_output_collection["Individual's ID"].isin(csv_dxsum["PTID"])
-    )
-
-    # -- Prepare mri dataset --
-    mri = csv_output_collection[csv_output_collection["included"]].copy()
-
-    if mri.empty:
-        print(f"[WARN] No valid MRI images found on disk. Returning empty DataFrame to avoid crash.")
-        return pd.DataFrame(columns=expected_cols)
-
-    mri = mri[[
-        "Output collection GUID", 
-        "Individual's ID", 
-        "TimePoint", 
-        "file_path"
-    ]].rename(columns={
+    # Standardize columns
+    mri = csv_output_collection.rename(columns={
         "Output collection GUID": "exam_id",
         "Individual's ID": "individual_id",
         "TimePoint": "time_point"
-    })
+    }).copy()
 
-    # -- Prepare diagnosis summary --
-    dxsum = csv_dxsum[[
-        "PTID",
-        "EXAMDATE",
-        "USERDATE",
-        "VISCODE", 
-        "VISCODE2",
-        "DXCURREN",
-        "DXCHANGE",
-        "DIAGNOSIS"
-    ]].rename(columns={
-        "PTID": "individual_id",
-    })
-    dxsum["EXAMDATE"] = dxsum["EXAMDATE"].fillna(dxsum["USERDATE"])
-    dxsum["EXAMDATE"] = pd.to_datetime(dxsum["EXAMDATE"], errors='coerce')
-    # dxsum["clinical_stage"] = dxsum.apply(determine_clinical_stage, axis=1)
-    # dxsum = dxsum.dropna(subset=["clinical_stage"])
-
-    # -- Add baseline info --
-    mri["baseline_date"] = mri["individual_id"].apply(get_baseline_date_for_subject, args=(dxsum,))
-    # mri["baseline_class"] = mri["individual_id"].apply(get_baseline_class_for_subject, args=(dxsum,))
-    mri["months_from_baseline"] = mri["time_point"].apply(get_months_from_baseline)
-    mri["exam_date"] = mri.apply(get_session_date, axis=1)
-
-    return mri
-
-def find_pet_file(individual_id, exam_id, exam_date, identifier, adni_path):
-    pet_path = Path(adni_path)
-    string_date = exam_date.strftime("%Y%m%d")
-    search_path = pet_path / individual_id
-    pattern = f"*{identifier}*{string_date}*.nii.gz"
-    matches = list(search_path.glob(pattern))
-    if matches:
-        return str(matches[0])
-    return None
-
-def build_pet_npy_file_path(row, preprocessed_root, pet_type):
-    """
-    Bygger paths till .npy och omvandlar clinical_stage → label.
-    Returnerar:
-        X_paths : np.array med paths
-        y       : np.array med int labels
-    """
-
-    subject = row["individual_id"]
-    exam_id = row["exam_id"]
-
-    npy_path = os.path.join(
-        preprocessed_root,
-        subject,
-        pet_type,
-        f"{exam_id}.npy"
+    # Build .npy file path
+    mri["file_path"] = mri.apply(build_mri_npy_file_path, args=(adni_path, "mri"), axis=1)
+    
+    # Filtering
+    mri["included"] = (
+        (mri["Job status"] == "completed") &
+        mri["file_path"].apply(os.path.exists) &
+        (mri["time_point"] != "tau") &
+        mri["individual_id"].isin(valid_ptids)
     )
 
-    return npy_path
-
-def load_pet_csv(mode="npy", adni_path="/home/maia-user/ADNI_npy"):
-    identifier="AV45"
-    pet_type = "amy"
-    adni_pet_file_name="UCBERKELEY_AMY_6MM_02Apr2025.csv"
-    if mode == "nii":
-        adni_file_path = os.path.join(adni_path, adni_pet_file_name)
-        DXSUM_PATH = os.path.join(adni_path, "DXSUM_PDXCONV_ADNIALL.csv")
-    elif mode == "npy":
-        adni_file_path = os.path.join(adni_path, "csv", adni_pet_file_name)
-        DXSUM_PATH = os.path.join(adni_path, "csv", "DXSUM_PDXCONV_ADNIALL.csv")
-    else:
-        raise ValueError(f"mode {mode} not implemented.")
-
-    pet_csv = pd.read_csv(adni_file_path, dtype={"VISCODE": str, "LONIUID": str, "PTID": str})
-    csv_dxsum = pd.read_csv(DXSUM_PATH)
+    mri = mri[mri["included"]].copy()
     
-    pet = pet_csv[[
-        "LONIUID", 
-        "VISCODE", 
-        "PTID", 
-        "SCANDATE",
-    ]].rename(columns={
-        "LONIUID": "exam_id",
-        "VISCODE": "viscode",
-        "PTID": "individual_id",
-        "SCANDATE": "exam_date",
-    }).copy()
-    pet["exam_date"] = pd.to_datetime(pet["exam_date"], errors='coerce')
-
-    if mode == "nii":
-        pet["file_path"] = pet.apply(
-            lambda row: find_pet_file(row["individual_id"], row["exam_id"], row["exam_date"], identifier, adni_path=adni_path), axis=1
-        )
-        pet["included"] = (
-            pet["file_path"].notna()
-            & pet["individual_id"].isin(csv_dxsum["PTID"])
-        )
+    # Prepare Diagnosis Summary for date calculations
+    if os.path.exists(DXSUM_PATH):
+        dxsum = csv_dxsum.rename(columns={"PTID": "individual_id"})
+        dxsum["EXAMDATE"] = pd.to_datetime(dxsum["EXAMDATE"].fillna(dxsum["USERDATE"]), errors='coerce')
+        
+        # Calculate dates
+        mri["baseline_date"] = mri["individual_id"].apply(get_baseline_date_for_subject, args=(dxsum,))
+        mri["months_from_baseline"] = mri["time_point"].apply(get_months_from_baseline)
+        mri["exam_date"] = mri.apply(get_session_date, axis=1)
     else:
-        pet["file_path"] = pet.apply(build_pet_npy_file_path, args=(adni_path, pet_type), axis=1)
-        pet["included"] = (
-            pet["file_path"].apply(os.path.exists)
-            & pet["individual_id"].isin(csv_dxsum["PTID"])
-        )
+        mri["exam_date"] = pd.NaT
 
-    # -- Prepare mri dataset --
+    return mri[expected_cols]
+
+# -----------------------------------------------------------------------------
+# LOAD PET
+# -----------------------------------------------------------------------------
+def load_pet_csv(adni_path="/home/maia-user/ADNI_npy", pet_type="amy"):
+    """
+    Laddar PET-data. Prioriterar 'generated_pet_registry.csv' om den finns.
+    """
+    # 1. Försök ladda det nya registret vi skapade (Bäst)
+    generated_registry_path = os.path.join(adni_path, "csv", "generated_pet_registry.csv")
+    
+    # # 2. Fallback: Gamla Berkeley-filen (Sämre, ID kan diffa)
+    # berkeley_csv_name = "UCBERKELEY_AMY_6MM_02Apr2025.csv"
+    # berkeley_path = os.path.join(adni_path, "csv", berkeley_csv_name)
+    
+    if os.path.exists(generated_registry_path):
+        print(f"[INFO] Loading PET data from generated registry: {generated_registry_path}")
+        pet = pd.read_csv(generated_registry_path)
+        # generated_pet_registry har kolumnerna: individual_id, exam_id, exam_date, tracer, file_path
+        
+    # elif os.path.exists(berkeley_path):
+    #     print(f"[WARN] Generated registry not found. Falling back to Berkeley CSV: {berkeley_path}")
+    #     print("[WARN] NOTE: This might fail if .npy files were named using the new ID format.")
+        
+    #     pet_csv = pd.read_csv(berkeley_path, dtype={"VISCODE": str, "LONIUID": str, "PTID": str})
+    #     pet = pet_csv.rename(columns={
+    #         "LONIUID": "exam_id",
+    #         "VISCODE": "viscode",
+    #         "PTID": "individual_id",
+    #         "SCANDATE": "exam_date",
+    #     })
+    else:
+        print(f"[ERROR] No PET CSV found in {os.path.join(adni_path, 'csv')}")
+        return pd.DataFrame(columns=["individual_id", "exam_id", "exam_date", "file_path"])
+
+    # Gemensam processering
+    pet["exam_date"] = pd.to_datetime(pet["exam_date"], errors='coerce')
+    
+    # BYGG .NPY SÖKVÄG
+    # Här räknas file_path ut och pekar på den processade .npy-filen
+    pet["file_path"] = pet.apply(build_pet_npy_file_path, args=(adni_path, pet_type), axis=1)
+    
+    # Filtrera: Bara filer som faktiskt finns på disken (.npy)
+    pet["included"] = pet["file_path"].apply(os.path.exists)
+    
     pet_df = pet[pet["included"]].copy()
+    
+    return pet_df[["individual_id", "exam_id", "exam_date", "file_path"]]
 
-    # pet_df = pet[pet["file_path"].notna()].copy()
-
-    return pet_df
-
+# -----------------------------------------------------------------------------
+# CLINICAL STAGE LOGIC
+# -----------------------------------------------------------------------------
 def determine_clinical_stage(row: pd.Series) -> str:
-    """Determine the clinical stage based on diagnosis variables."""
-    # Extract diagnosis variables
+    """Bestämmer kliniskt stadie (CN, MCI, AD) baserat på diagnos-koder."""
     dxcur = row.get("DXCURREN", pd.NA)
     dxchange = row.get("DXCHANGE", pd.NA)
     diagnosis = row.get("DIAGNOSIS", pd.NA)
     
-    # Determine clinical stage based on ADNI3 (DIAGNOSIS)
+    # ADNI3 (DIAGNOSIS)
     if pd.notna(diagnosis):
-        if diagnosis == 1:
-            return "CN"  # Cognitively Normal
-        elif diagnosis == 2:
-            return "MCI"  # Mild Cognitive Impairment
-        elif diagnosis == 3:
-            return "AD"  # Alzheimer's Disease
+        if diagnosis == 1: return "CN"
+        elif diagnosis == 2: return "MCI"
+        elif diagnosis == 3: return "AD"
         
-    # Determine clinical stage based on ADNIGO/2 (DXCHANGE)
-    if pd.notna(dxchange):
-        if dxchange in [1, 7, 9]:
-            return "CN"  # Stable/Returned to Normal
-        elif dxchange in [2, 8]:
-            return "MCI"  # Stable/Returned to MCI
-        elif dxchange in [3, 5, 6]:
-            return "AD"  # Stable/Converted to Dementia
-        elif dxchange == 4:
-            return "MCI"  # Conversion to MCI
+    # # ADNIGO/2 (DXCHANGE)
+    # if pd.notna(dxchange):
+    #     if dxchange in [1, 7, 9]: return "CN"
+    #     elif dxchange in [2, 4, 8]: return "MCI"
+    #     elif dxchange in [3, 5, 6]: return "AD"
         
-    # Determine clinical stage based on ADNI1 (DXCURREN)
-    if pd.notna(dxcur):
-        if dxcur == 1:
-            return "CN"  # Cognitively Normal
-        elif dxcur == 2:
-            return "MCI"  # Mild Cognitive Impairment
-        elif dxcur == 3:
-            return "AD"  # Alzheimer's Disease
+    # # ADNI1 (DXCURREN)
+    # if pd.notna(dxcur):
+    #     if dxcur == 1: return "CN"
+    #     elif dxcur == 2: return "MCI"
+    #     elif dxcur == 3: return "AD"
 
-    return pd.NA  # If no valid data
+    return pd.NA
 
 def get_baseline_class_for_subject(subject_id: str, dxsum: pd.DataFrame) -> str:
-    """Get the baseline clinical stage for a given subject ID."""
+    """Hämtar baslinje-diagnos för en patient."""
     subject_data = dxsum[dxsum["individual_id"] == subject_id]
     if subject_data.empty:
-        logger.warning(f"No data found for subject {subject_id}.")
         return "Unknown"
     
     stage = _get_first_entry(subject_data, "bl", "clinical_stage")
     if pd.isna(stage):
         stage = _get_first_entry(subject_data, "sc", "clinical_stage")
 
-    if pd.isna(stage):
-        logger.warning(f"No baseline/screening clinical stage for subject {subject_id}.")
-        return "Unknown"
+    return stage if pd.notna(stage) else "Unknown"
+
+
+# -----------------------------------------------------------------------------
+# MAIN LOAD FUNCTION
+# -----------------------------------------------------------------------------
+def load_dataset(classes=["CN", "MCI", "AD"], adni_path_mri="/home/maia-user/ADNI_npy", adni_path_pet="/home/maia-user/ADNI_npy", modalities=["mri", "amy"]):
     
-    return stage
+    # 1. Ladda Modaliteter (NPY Paths)
+    mri = load_mri_csv(adni_path_mri)
+    pet = load_pet_csv(adni_path_pet, pet_type="amy")
 
-def load_dataset(mode = "npy", classes=["CN", "MCI", "AD"], adni_path_mri="/home/maia-user/ADNI_npy", adni_path_pet="/home/maia-user/ADNI_npy", modalities=["mri", "amy"]):
+    # 2. Ladda Diagnos-data
+    DXSUM_PATH = os.path.join(adni_path_mri, "csv", "DXSUM_10Feb2026.csv")
     
-    # Load modalities
-    mri = load_mri_csv(mode, adni_path_mri)
-    pet = load_pet_csv(mode, adni_path_pet)
-
-    if mode == "nii":
-        DXSUM_PATH = os.path.join(adni_path_mri, "DXSUM_PDXCONV_ADNIALL.csv")
-    elif mode == "npy":
-        DXSUM_PATH = os.path.join(adni_path_mri, "csv", "DXSUM_PDXCONV_ADNIALL.csv")
-    else:
-        raise ValueError(f"mode {mode} not implemented.")
-
-    # -- Prepare diagnosis summary --
     if not os.path.exists(DXSUM_PATH):
-        # Fallback om filen saknas, skapa tom DF med rätt kolumner för att inte krascha senare
-        print(f"[WARN] DXSUM file not found at {DXSUM_PATH}. Creating dummy diagnosis dataframe.")
-        dxsum = pd.DataFrame(columns=["PTID", "EXAMDATE", "USERDATE", "VISCODE", "VISCODE2", "DXCURREN", "DXCHANGE", "DIAGNOSIS"])
-        dxsum["clinical_stage"] = []
+        print(f"[WARN] DXSUM file not found. Creating dummy diagnosis dataframe.")
+        dxsum = pd.DataFrame(columns=["individual_id", "EXAMDATE", "clinical_stage"])
     else:
         csv_dxsum = pd.read_csv(DXSUM_PATH)
-        dxsum = csv_dxsum[[
-            "PTID",
-            "EXAMDATE",
-            "USERDATE",
-            "VISCODE", 
-            "VISCODE2",
-            "DXCURREN",
-            "DXCHANGE",
-            "DIAGNOSIS"
-        ]].rename(columns={
-            "PTID": "individual_id",
-        })
-        dxsum["EXAMDATE"] = dxsum["EXAMDATE"].fillna(dxsum["USERDATE"])
-        dxsum["EXAMDATE"] = pd.to_datetime(dxsum["EXAMDATE"], errors='coerce')
+        dxsum = csv_dxsum.rename(columns={"PTID": "individual_id"})
+        dxsum["EXAMDATE"] = pd.to_datetime(dxsum["EXAMDATE"].fillna(dxsum["USERDATE"]), errors='coerce')
         dxsum["clinical_stage"] = dxsum.apply(determine_clinical_stage, axis=1)
         dxsum = dxsum.dropna(subset=["clinical_stage"])
 
-    # --- HÄR ÄR FIXEN: Tvinga datatyperna även om tabellerna är tomma ---
-    
-    # 1. Konvertera till datetime (pd.to_datetime hanterar tomma serier korrekt)
-    mri["exam_date"] = pd.to_datetime(mri["exam_date"])
-    pet["exam_date"] = pd.to_datetime(pet["exam_date"])
+    # 3. Förbered Merge (Typkonvertering)
+    for df in [mri, pet]:
+        if not df.empty:
+            df["exam_date"] = pd.to_datetime(df["exam_date"])
+            df["individual_id"] = df["individual_id"].astype(str)
+        else:
+            # Säkra tomma dataframes så merge inte kraschar
+            df["exam_date"] = pd.to_datetime([])
+            df["individual_id"] = pd.Series([], dtype=str)
 
-    # 2. Om de fortfarande är tomma kan dtypen ha fastnat som 'object'. Tvinga cast.
-    if mri.empty:
-        mri["exam_date"] = mri["exam_date"].astype("datetime64[ns]")
-    if pet.empty:
-        pet["exam_date"] = pet["exam_date"].astype("datetime64[ns]")
-
-    # Samma sak för ID-kolumnerna för att undvika merge-fel om en är int och en är string
-    mri["individual_id"] = mri["individual_id"].astype(str)
-    pet["individual_id"] = pet["individual_id"].astype(str)
-    # -------------------------------------------------------------------
-
-    # 1️⃣ PET → närmaste MRI
-    # (Nu kommer detta fungera eftersom båda exam_date är datetime64[ns], även om mri är tom)
+    # 4. Merge PET & MRI (Nearest Date Matching)
+    # PET -> MRI
     pet_to_mri = pd.merge_asof(
         pet.sort_values("exam_date"), mri.sort_values("exam_date"),
         by="individual_id",
@@ -393,7 +306,7 @@ def load_dataset(mode = "npy", classes=["CN", "MCI", "AD"], adni_path_mri="/home
         suffixes=("_amy", "_mri")
     )
     
-    # 2️⃣ MRI → närmaste PET
+    # MRI -> PET
     mri_to_pet = pd.merge_asof(
         mri.sort_values("exam_date"), pet.sort_values("exam_date"),
         by="individual_id",
@@ -404,89 +317,60 @@ def load_dataset(mode = "npy", classes=["CN", "MCI", "AD"], adni_path_mri="/home
         suffixes=("_mri", "_amy")
     )
     
-    # Säkra att kolumnerna finns
-    required_cols_mutual = ["individual_id", "exam_id_amy", "exam_id_mri"]
-    for col in required_cols_mutual:
-        if col not in pet_to_mri.columns: pet_to_mri[col] = pd.NA
-        if col not in mri_to_pet.columns: mri_to_pet[col] = pd.NA
+    # Säkra kolumner
+    req_cols = ["individual_id", "exam_id_amy", "exam_id_mri", "file_path_amy", "file_path_mri"]
+    for df in [pet_to_mri, mri_to_pet]:
+        for col in req_cols:
+            if col not in df.columns: df[col] = pd.NA
 
-    # 3️⃣ Kombinera ömsesidiga par
-    # Om mri är tom blir 'mutual' också tom, vilket är helt okej.
+    # 5. Skapa "Combined" dataset (Mutual + Unmatched)
+    # Mutual (Där båda finns)
     mutual = pd.merge(
-        pet_to_mri[["individual_id", "exam_id_amy", "exam_id_mri", "file_path_amy", "file_path_mri", "exam_date"]],
+        pet_to_mri[req_cols + ["exam_date"]],
         mri_to_pet[["individual_id", "exam_id_amy", "exam_id_mri"]],
         on=["individual_id", "exam_id_amy", "exam_id_mri"]
     )
 
-    # 4️⃣ Hantera unmatched
-    if "file_path_mri" in pet_to_mri.columns:
-        unmatched_pet = pet_to_mri[pet_to_mri["file_path_mri"].isna()]
-    else:
-        unmatched_pet = pet_to_mri 
-
-    if "file_path_amy" in mri_to_pet.columns:
-        unmatched_mri = mri_to_pet[mri_to_pet["file_path_amy"].isna()]
-    else:
-        unmatched_mri = mri_to_pet
+    # Unmatched
+    unmatched_pet = pet_to_mri[pet_to_mri["file_path_mri"].isna()]
+    unmatched_mri = mri_to_pet[mri_to_pet["file_path_amy"].isna()]
 
     combined = pd.concat([mutual, unmatched_pet, unmatched_mri], ignore_index=True)
     
     if combined.empty:
-        print("[WARN] Resulting dataset is empty after merging MRI and PET.")
-        return pd.DataFrame() # Returnera tom, men koden kraschar inte
+        print("[WARN] Dataset is empty after merge.")
+        return pd.DataFrame()
 
-    # -- Add baseline info --
-    combined["baseline_date"] = combined["individual_id"].apply(get_baseline_date_for_subject, args=(dxsum,))
-    combined["baseline_class"] = combined["individual_id"].apply(get_baseline_class_for_subject, args=(dxsum,))
-
+    # 6. Lägg till Diagnos (Clinical Stage)
     combined["anchor_date"] = combined["exam_date"]
+    
+    matched = pd.merge_asof(
+        combined.sort_values("anchor_date"),
+        dxsum[["individual_id", "EXAMDATE", "clinical_stage"]].sort_values("EXAMDATE"),
+        by="individual_id",
+        left_on="anchor_date",
+        right_on="EXAMDATE",
+        direction="nearest",
+        # tolerance=pd.Timedelta("365D") # Diagnos får vara upp till 1 år gammal/framåt
+    )
 
-    # -- Merge combined with diagnosis info --
-    if dxsum.empty:
-        # Om vi inte har diagnos-data, returnera det vi har (men det blir nog tomt på clinical_stage)
-        matched = combined
-        matched["clinical_stage"] = pd.NA
-    else:
-        matched = pd.merge_asof(
-            combined.sort_values("anchor_date"),
-            dxsum[["individual_id", "EXAMDATE", "VISCODE2", "clinical_stage"]]
-                .sort_values("EXAMDATE"),
-            by="individual_id",
-            left_on="anchor_date",
-            right_on="EXAMDATE",
-            direction="nearest"
-        ).dropna(subset=["clinical_stage"])
+    # print(matched)
 
-    combined_merged = matched[[
-        "exam_id_mri", 
-        "exam_id_amy", 
-        "individual_id", 
-        "EXAMDATE",
-        "baseline_class",
-        "baseline_date",
-        "clinical_stage",
-        "file_path_mri",
-        "file_path_amy",
-    ]].rename(columns={
-        "EXAMDATE": "exam_date"
-    })
-    combined_merged = combined_merged[combined_merged["clinical_stage"].isin(classes)].reset_index(drop=True)
-
-    # --- DYNAMISK FILTRERING ---
+    # 7. Slutgiltig filtrering
+    final_df = matched[matched["clinical_stage"].isin(classes)].reset_index(drop=True)
+    
+    # Filtrera baserat på requested modalities (mri, amy)
+    # Om en modalitet saknas i listan 'modalities', ta bort rader som bara har den modaliteten
     cols_to_check = [f"file_path_{mod}" for mod in modalities]
-    valid_cols = [c for c in cols_to_check if c in combined_merged.columns]
-
-    if valid_cols:
-        print(f"[INFO] Filtering dataset based on modalities: {modalities}")
-        combined_merged = combined_merged.dropna(subset=valid_cols, how='all').reset_index(drop=True)
-    else:
-        print(f"[WARN] No valid columns found corresponding to {modalities}. Returning full (likely empty) dataset.")
-
-    return combined_merged
-
+    existing_cols = [c for c in cols_to_check if c in final_df.columns]
+    
+    if existing_cols:
+        # Ta bort rader där ALLA efterfrågade modaliteter saknas
+        final_df = final_df.dropna(subset=existing_cols, how='all')
+    
+    print(f"[INFO] Final dataset size: {len(final_df)} samples.")
+    return final_df
 
 def load_npy_dataset(classes=["CN", "MCI", "AD"], adni_path="/home/maia-user/ADNI_npy", modalities=["mri", "amy"]):
-    mode = "npy"
-    df = load_dataset(mode="npy", classes=classes, adni_path_mri=adni_path, adni_path_pet=adni_path, modalities=modalities)
-    return df
-
+    """Wrapper för bakåtkompatibilitet."""
+    return load_dataset(classes=classes, adni_path_mri=adni_path, adni_path_pet=adni_path, modalities=modalities)
