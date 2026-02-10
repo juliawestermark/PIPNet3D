@@ -75,7 +75,7 @@ def create_pet_dataframe_from_filesystem(adni_path):
                     "exam_date": pd.to_datetime(date_str_raw),
                     "tracer": tracer,
                     "viscode": None, # Vi vet inte viscode utan DXSUM-matchning än
-                    "file_path": None,
+                    "file_path": file_path,
                     "included": True
                 })
 
