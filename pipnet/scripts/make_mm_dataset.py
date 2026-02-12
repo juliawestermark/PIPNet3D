@@ -399,6 +399,27 @@ def load_dataset(
             print("Balansering: Ingen downsampling behövdes (MRI-only < Paired).")
 
         print(f"Slutligt antal rader: {len(final_df)}")
+    
+    cols_to_check = []
+    for mod in modalities:
+        if mod == "mri":
+            cols_to_check.append("file_path_mri")
+        elif mod == "amy":
+            cols_to_check.append("file_path_amy")
+    
+    # Filtrera bara om vi hittade relevanta kolumner
+    valid_cols = [c for c in cols_to_check if c in final_df.columns]
+    
+    if valid_cols:
+        before_count = len(final_df)
+        # how='all' betyder: Ta bort raden BARA om ALLA efterfrågade modaliteter saknas.
+        # Ex: Om modalities=['mri'] -> Tar bort alla rader där MRI saknas.
+        # Ex: Om modalities=['mri', 'amy'] -> Tar bort rader där BÅDE MRI och Amy saknas (borde vara 0).
+        final_df = final_df.dropna(subset=valid_cols, how='all').reset_index(drop=True)
+        
+        diff = before_count - len(final_df)
+        if diff > 0:
+            print(f"[INFO] Rensade bort {diff} rader som saknade data för {modalities}.")
 
     return final_df
 
