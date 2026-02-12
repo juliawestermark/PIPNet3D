@@ -271,7 +271,7 @@ def load_dataset(
     adni_path_pet="/home/maia-user/ADNI_npy", 
     modalities=["mri", "amy"],
     seed=42,
-    balanced=False # <--- NYTT ARGUMENT
+    balanced=False 
 ):
     # 1. Ladda Modaliteter
     mri = load_mri_csv(adni_path_mri)
@@ -290,47 +290,60 @@ def load_dataset(
         dxsum["clinical_stage"] = dxsum.apply(determine_clinical_stage, axis=1)
         dxsum = dxsum.dropna(subset=["clinical_stage"])
 
-    # 3. Typkonvertering för Merge
+    # 3. Typkonvertering
     for df in [mri, pet]:
         if not df.empty:
             df["exam_date"] = pd.to_datetime(df["exam_date"])
             df["individual_id"] = df["individual_id"].astype(str)
         else:
-            # Säkra tomma dataframes så merge inte kraschar
             df["exam_date"] = pd.to_datetime([])
             df["individual_id"] = pd.Series([], dtype=str)
 
-    # 4. Merge (Eftersom du inte har överlapp kommer mutual bli tom)
-    pet_to_mri = pd.merge_asof(
-        pet.sort_values("exam_date"), mri.sort_values("exam_date"),
-        by="individual_id", left_on="exam_date", right_on="exam_date",
-        direction="nearest", tolerance=pd.Timedelta("90D"), suffixes=("_amy", "_mri")
+    # 4. MATCHNING (Strategi: Alla MRI får en PET om det finns)
+    
+    # A. Huvud-matchning: Varje MRI hämtar närmaste PET
+    # Eftersom vi tillåter dubletter på PET-sidan (flera MRI mot samma PET), 
+    # är detta vår huvudsakliga datakälla.
+    mri_to_pet = pd.merge_asof(
+        mri.sort_values("exam_date"), 
+        pet.sort_values("exam_date"),
+        by="individual_id", 
+        left_on="exam_date", 
+        right_on="exam_date",
+        direction="nearest", 
+        suffixes=("_mri", "_amy")
     )
     
-    mri_to_pet = pd.merge_asof(
-        mri.sort_values("exam_date"), pet.sort_values("exam_date"),
-        by="individual_id", left_on="exam_date", right_on="exam_date",
-        direction="nearest", tolerance=pd.Timedelta("90D"), suffixes=("_mri", "_amy")
+    # B. Hitta "Föräldralösa" PET-bilder
+    # Vi kollar åt andra hållet BARA för att hitta PET-bilder där patienten 
+    # inte har någon MRI alls (eftersom mri_to_pet missar dessa).
+    pet_to_mri = pd.merge_asof(
+        pet.sort_values("exam_date"), 
+        mri.sort_values("exam_date"),
+        by="individual_id", 
+        left_on="exam_date", 
+        right_on="exam_date",
+        direction="nearest", 
+        suffixes=("_amy", "_mri")
     )
-
-    # Identifiera ömsesidiga par (mutual), PET-only och MRI-only
+    
+    # Säkra kolumner inför ihopslagning
     req_cols = ["individual_id", "exam_id_amy", "exam_id_mri", "file_path_amy", "file_path_mri"]
-    for df in [pet_to_mri, mri_to_pet]:
+    for df in [mri_to_pet, pet_to_mri]:
         for col in req_cols:
             if col not in df.columns: df[col] = pd.NA
 
-    mutual = pd.merge(
-        pet_to_mri[req_cols + ["exam_date"]],
-        mri_to_pet[["individual_id", "exam_id_amy", "exam_id_mri"]],
-        on=["individual_id", "exam_id_amy", "exam_id_mri"]
-    )
-
-    unmatched_pet = pet_to_mri[pet_to_mri["file_path_mri"].isna()]
-    unmatched_mri = mri_to_pet[mri_to_pet["file_path_amy"].isna()]
-
-    # Skapa det kombinerade datasetet
-    combined = pd.concat([mutual, unmatched_pet, unmatched_mri], ignore_index=True)
+    # C. Sätt ihop allt
+    # 1. Ta ALLA rader från mri_to_pet (Detta inkluderar 'Paired' och 'MRI-only')
+    #    Här kan samma PET-bild dyka upp på flera rader, vilket var det du ville.
+    main_dataset = mri_to_pet[req_cols + ["exam_date"]]
     
+    # 2. Hitta PET-bilder som inte matchade någon MRI alls (unmatched PETs)
+    unmatched_pet = pet_to_mri[pet_to_mri["file_path_mri"].isna()]
+    
+    # 3. Lägg ihop
+    combined = pd.concat([main_dataset, unmatched_pet[req_cols + ["exam_date"]]], ignore_index=True)
+
     if combined.empty:
         print("[WARN] Dataset is empty after merge.")
         return pd.DataFrame()
@@ -340,45 +353,52 @@ def load_dataset(
     matched = pd.merge_asof(
         combined.sort_values("anchor_date"),
         dxsum[["individual_id", "EXAMDATE", "clinical_stage"]].sort_values("EXAMDATE"),
-        by="individual_id", left_on="anchor_date", right_on="EXAMDATE",
-        direction="nearest", tolerance=pd.Timedelta("365D")
+        by="individual_id", 
+        left_on="anchor_date", 
+        right_on="EXAMDATE",
+        direction="nearest", 
+        # tolerance=pd.Timedelta("365D")
     )
 
     final_df = matched[matched["clinical_stage"].isin(classes)].reset_index(drop=True)
 
     # -------------------------------------------------------------------------
-    # NY BALANSERINGSLOGIK
+    # BALANSERING (Uppdaterad för din nya logik)
     # -------------------------------------------------------------------------
     if balanced and len(modalities) > 1:
         print("--- [BALANCING ACTIVATED] ---")
-        # Dela upp i rader som har MRI vs rader som har PET
-        # (Vi kollar file_path kolumnerna som skapades under merge)
-        mri_only = final_df[final_df["file_path_mri"].notna() & final_df["file_path_amy"].isna()]
-        pet_only = final_df[final_df["file_path_amy"].notna() & final_df["file_path_mri"].isna()]
-        paired = final_df[final_df["file_path_mri"].notna() & final_df["file_path_amy"].notna()]
-
-        n_mri = len(mri_only)
-        n_pet = len(pet_only)
-        n_paired = len(paired)
-
-        print(f"Före balansering: MRI-only: {n_mri}, PET-only: {n_pet}, Paired: {n_paired}")
-
-        # Hitta minsta antalet av de två modaliterna (oftast PET hos dig)
-        # Vi vill ha totalt lika många MRI-bidrag som PET-bidrag
-        target_n = min(n_mri + n_paired, n_pet + n_paired)
         
-        # Om vi antar att PET är minoritet (900):
-        if n_mri > n_pet:
-            # Slumpa fram 900 MRI-rader från de 20 000
-            mri_only_sampled = mri_only.sample(n=n_pet, random_state=seed)
-            final_df = pd.concat([mri_only_sampled, pet_only, paired], ignore_index=True)
-        elif n_pet > n_mri:
-            # Om PET mot förmodan var fler
-            pet_only_sampled = pet_only.sample(n=n_mri, random_state=seed)
-            final_df = pd.concat([mri_only, pet_only_sampled, paired], ignore_index=True)
+        # Paired = Har både MRI och PET (Här ingår nu de MRI som delar på samma PET)
+        paired = final_df[final_df["file_path_mri"].notna() & final_df["file_path_amy"].notna()]
+        
+        # MRI Only = Har MRI men hittade ingen PET för patienten
+        mri_only = final_df[final_df["file_path_mri"].notna() & final_df["file_path_amy"].isna()]
+        
+        # PET Only = Har PET men ingen MRI (Extremt ovanligt med din volym, men möjligt)
+        pet_only = final_df[final_df["file_path_amy"].notna() & final_df["file_path_mri"].isna()]
 
-        print(f"Efter balansering: Totalt {len(final_df)} rader.")
-    # -------------------------------------------------------------------------
+        n_paired = len(paired)
+        n_mri_only = len(mri_only)
+        n_pet_only = len(pet_only)
+
+        print(f"Status: Paired (MRI+PET): {n_paired}, MRI-only: {n_mri_only}, PET-only: {n_pet_only}")
+
+        # LOGIK: Vi vill använda ALLA parade exempel eftersom de är guld värda.
+        # Vi fyller sedan på med "rena" MRI-bilder (mri_only) så att vi inte dränker PET-datan.
+        
+        # Exempel: Om du har 2000 parade (där 900 unika PET återanvänds) och 18000 MRI-only.
+        # Då kanske vi vill ha max lika många MRI-only som vi har Paired.
+        
+        limit = n_paired + n_pet_only
+        
+        if n_mri_only > limit:
+            mri_only_sampled = mri_only.sample(n=limit, random_state=seed)
+            final_df = pd.concat([paired, pet_only, mri_only_sampled], ignore_index=True)
+            print(f"Balansering: Begränsade MRI-only till {limit} st för att matcha mängden PET-data.")
+        else:
+            print("Balansering: Ingen downsampling behövdes (MRI-only < Paired).")
+
+        print(f"Slutligt antal rader: {len(final_df)}")
 
     return final_df
 
