@@ -33,9 +33,9 @@ def get_args(
     net_dic = {"resnet3D_18_kin400":3, "convnext3D_tiny":1}
     #dic_classes = {"CN":0, "AD":1} # {"CN":0, "MCI": 1, "AD":2}
     dic_classes = {"CN":0, "MCI": 1, "AD":2}
-    modalities = ['mri']
-    # modalities = ['amy']
-    #modalities = ['mri', 'amy']
+    #modalities = ['mri']
+    #modalities = ['amy']
+    modalities = ['mri', 'amy']
 
     #root_folder = "/home/maia-user/PIPNet3D/"
     root_folder = "/proj/berzbiomedicalimagingkth/users/x_julwe/PIPNet3D/"
@@ -66,7 +66,7 @@ def get_args(
     modality_shape = {
         # 'mri': (169, 208, 179),
         'mri': (179, 169, 208),
-        'amy': (128, 128, 128),  # TODO: Change values
+        'amy': (160, 160, 96),  # TODO: Change values
     }
     
     channels = net_dic[net]
@@ -78,8 +78,8 @@ def get_args(
     
     batch_size_pretrain = 12 #16 # 2
     batch_size = 12 #16 # 2
-    epochs_pretrain = 20 #10 # 1
-    epochs = 60 #60 # 2
+    epochs_pretrain = 10 #10 # 1
+    epochs = 30 #60 # 2
     optimizer = "Adam"
     lr = 0.05
     lr_age = 0.1

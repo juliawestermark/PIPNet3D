@@ -275,7 +275,7 @@ def get_local_explanations(
         device,
         args: argparse.Namespace,
         plot = False,
-        plot_limit_per_modality = 50,
+        plot_limit_per_modality = 20,
         max_samples = None 
         ):
     
