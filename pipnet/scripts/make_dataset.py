@@ -378,7 +378,7 @@ def create_datasets(directory_dataframe, transforms_dic, dic_classes, n_fold, cu
     return trainset, trainset_pretraining, trainset_normal, trainset_normal_augment, projectset, valset, testset, testset_projection
 
 
-def get_brains(dataset_path, metadata_path, target_shapes, channels, dic_classes, n_fold, current_fold, test_split, seed, modalities, mod_shape):
+def get_brains(dataset_path, metadata_path, target_shapes, channels, dic_classes, n_fold, current_fold, test_split, seed, modalities, mod_shape, balanced_modalities):
     
     aug_prob = 0.5
     rand_rot = 6                        # random rotation range [deg]
@@ -438,7 +438,7 @@ def get_brains(dataset_path, metadata_path, target_shapes, channels, dic_classes
             else:
                 transforms_dic[stage][mod] = get_transform_chain('other', t_shape)
 
-    mm_df = load_npy_dataset(adni_path=dataset_path, classes=dic_classes.keys(), modalities=modalities)
+    mm_df = load_npy_dataset(adni_path=dataset_path, classes=dic_classes.keys(), modalities=modalities, seed=seed, balanced=balanced_modalities)
 
     return create_datasets(
         directory_dataframe = mm_df,
@@ -458,7 +458,7 @@ def get_data(args: argparse.Namespace):
 
     """ Load dataset based on the parsed arguments """
 
-    mm_df = load_npy_dataset(adni_path=args.dataset_path, classes=list(args.dic_classes.keys()), modalities=args.modalities)
+    mm_df = load_npy_dataset(adni_path=args.dataset_path, classes=list(args.dic_classes.keys()), modalities=args.modalities, seed=args.seed, balanced=args.balanced_modalities)
 
     # --- NYTT: Beräkna Target Shapes för VARJE modalitet separat ---
     ds = args.downscaling
@@ -504,7 +504,8 @@ def get_data(args: argparse.Namespace):
         test_split = args.test_split,
         seed = args.seed,
         modalities = args.modalities,
-        mod_shape = args.mod_shape
+        mod_shape = args.mod_shape,
+        balanced_modalities = args.balanced_modalities
         )
 
     raise Exception(f'Could not load data set, data set "{args.dataset_path}" not found!')

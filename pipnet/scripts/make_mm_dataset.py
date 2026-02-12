@@ -265,9 +265,15 @@ def get_baseline_class_for_subject(subject_id: str, dxsum: pd.DataFrame) -> str:
 # -----------------------------------------------------------------------------
 # MAIN LOAD FUNCTION
 # -----------------------------------------------------------------------------
-def load_dataset(classes=["CN", "MCI", "AD"], adni_path_mri="/home/maia-user/ADNI_npy", adni_path_pet="/home/maia-user/ADNI_npy", modalities=["mri", "amy"]):
-    
-    # 1. Ladda Modaliteter (NPY Paths)
+def load_dataset(
+    classes=["CN", "MCI", "AD"], 
+    adni_path_mri="/home/maia-user/ADNI_npy", 
+    adni_path_pet="/home/maia-user/ADNI_npy", 
+    modalities=["mri", "amy"],
+    seed=42,
+    balanced=False # <--- NYTT ARGUMENT
+):
+    # 1. Ladda Modaliteter
     mri = load_mri_csv(adni_path_mri)
     pet = load_pet_csv(adni_path_pet, pet_type="amy")
 
@@ -275,7 +281,7 @@ def load_dataset(classes=["CN", "MCI", "AD"], adni_path_mri="/home/maia-user/ADN
     DXSUM_PATH = os.path.join(adni_path_mri, "csv", "DXSUM_10Feb2026.csv")
     
     if not os.path.exists(DXSUM_PATH):
-        print(f"[WARN] DXSUM file not found. Creating dummy diagnosis dataframe.")
+        print(f"[WARN] DXSUM not found. Creating dummy.")
         dxsum = pd.DataFrame(columns=["individual_id", "EXAMDATE", "clinical_stage"])
     else:
         csv_dxsum = pd.read_csv(DXSUM_PATH)
@@ -284,7 +290,7 @@ def load_dataset(classes=["CN", "MCI", "AD"], adni_path_mri="/home/maia-user/ADN
         dxsum["clinical_stage"] = dxsum.apply(determine_clinical_stage, axis=1)
         dxsum = dxsum.dropna(subset=["clinical_stage"])
 
-    # 3. Förbered Merge (Typkonvertering)
+    # 3. Typkonvertering för Merge
     for df in [mri, pet]:
         if not df.empty:
             df["exam_date"] = pd.to_datetime(df["exam_date"])
@@ -294,83 +300,88 @@ def load_dataset(classes=["CN", "MCI", "AD"], adni_path_mri="/home/maia-user/ADN
             df["exam_date"] = pd.to_datetime([])
             df["individual_id"] = pd.Series([], dtype=str)
 
-    # 4. Merge PET & MRI (Nearest Date Matching)
-    # PET -> MRI
+    # 4. Merge (Eftersom du inte har överlapp kommer mutual bli tom)
     pet_to_mri = pd.merge_asof(
         pet.sort_values("exam_date"), mri.sort_values("exam_date"),
-        by="individual_id",
-        left_on="exam_date",
-        right_on="exam_date",
-        direction="nearest",
-        tolerance=pd.Timedelta("90D"),
-        suffixes=("_amy", "_mri")
+        by="individual_id", left_on="exam_date", right_on="exam_date",
+        direction="nearest", tolerance=pd.Timedelta("90D"), suffixes=("_amy", "_mri")
     )
     
-    # MRI -> PET
     mri_to_pet = pd.merge_asof(
         mri.sort_values("exam_date"), pet.sort_values("exam_date"),
-        by="individual_id",
-        left_on="exam_date",
-        right_on="exam_date",
-        direction="nearest",
-        tolerance=pd.Timedelta("90D"),
-        suffixes=("_mri", "_amy")
+        by="individual_id", left_on="exam_date", right_on="exam_date",
+        direction="nearest", tolerance=pd.Timedelta("90D"), suffixes=("_mri", "_amy")
     )
-    
-    # Säkra kolumner
+
+    # Identifiera ömsesidiga par (mutual), PET-only och MRI-only
     req_cols = ["individual_id", "exam_id_amy", "exam_id_mri", "file_path_amy", "file_path_mri"]
     for df in [pet_to_mri, mri_to_pet]:
         for col in req_cols:
             if col not in df.columns: df[col] = pd.NA
 
-    # 5. Skapa "Combined" dataset (Mutual + Unmatched)
-    # Mutual (Där båda finns)
     mutual = pd.merge(
         pet_to_mri[req_cols + ["exam_date"]],
         mri_to_pet[["individual_id", "exam_id_amy", "exam_id_mri"]],
         on=["individual_id", "exam_id_amy", "exam_id_mri"]
     )
 
-    # Unmatched
     unmatched_pet = pet_to_mri[pet_to_mri["file_path_mri"].isna()]
     unmatched_mri = mri_to_pet[mri_to_pet["file_path_amy"].isna()]
 
+    # Skapa det kombinerade datasetet
     combined = pd.concat([mutual, unmatched_pet, unmatched_mri], ignore_index=True)
     
     if combined.empty:
         print("[WARN] Dataset is empty after merge.")
         return pd.DataFrame()
 
-    # 6. Lägg till Diagnos (Clinical Stage)
+    # 5. Matcha med Diagnos
     combined["anchor_date"] = combined["exam_date"]
-    
     matched = pd.merge_asof(
         combined.sort_values("anchor_date"),
         dxsum[["individual_id", "EXAMDATE", "clinical_stage"]].sort_values("EXAMDATE"),
-        by="individual_id",
-        left_on="anchor_date",
-        right_on="EXAMDATE",
-        direction="nearest",
-        # tolerance=pd.Timedelta("365D") # Diagnos får vara upp till 1 år gammal/framåt
+        by="individual_id", left_on="anchor_date", right_on="EXAMDATE",
+        direction="nearest", tolerance=pd.Timedelta("365D")
     )
 
-    # print(matched)
-
-    # 7. Slutgiltig filtrering
     final_df = matched[matched["clinical_stage"].isin(classes)].reset_index(drop=True)
-    
-    # Filtrera baserat på requested modalities (mri, amy)
-    # Om en modalitet saknas i listan 'modalities', ta bort rader som bara har den modaliteten
-    cols_to_check = [f"file_path_{mod}" for mod in modalities]
-    existing_cols = [c for c in cols_to_check if c in final_df.columns]
-    
-    if existing_cols:
-        # Ta bort rader där ALLA efterfrågade modaliteter saknas
-        final_df = final_df.dropna(subset=existing_cols, how='all')
-    
-    print(f"[INFO] Final dataset size: {len(final_df)} samples.")
+
+    # -------------------------------------------------------------------------
+    # NY BALANSERINGSLOGIK
+    # -------------------------------------------------------------------------
+    if balanced and len(modalities) > 1:
+        print("--- [BALANCING ACTIVATED] ---")
+        # Dela upp i rader som har MRI vs rader som har PET
+        # (Vi kollar file_path kolumnerna som skapades under merge)
+        mri_only = final_df[final_df["file_path_mri"].notna() & final_df["file_path_amy"].isna()]
+        pet_only = final_df[final_df["file_path_amy"].notna() & final_df["file_path_mri"].isna()]
+        paired = final_df[final_df["file_path_mri"].notna() & final_df["file_path_amy"].notna()]
+
+        n_mri = len(mri_only)
+        n_pet = len(pet_only)
+        n_paired = len(paired)
+
+        print(f"Före balansering: MRI-only: {n_mri}, PET-only: {n_pet}, Paired: {n_paired}")
+
+        # Hitta minsta antalet av de två modaliterna (oftast PET hos dig)
+        # Vi vill ha totalt lika många MRI-bidrag som PET-bidrag
+        target_n = min(n_mri + n_paired, n_pet + n_paired)
+        
+        # Om vi antar att PET är minoritet (900):
+        if n_mri > n_pet:
+            # Slumpa fram 900 MRI-rader från de 20 000
+            mri_only_sampled = mri_only.sample(n=n_pet, random_state=seed)
+            final_df = pd.concat([mri_only_sampled, pet_only, paired], ignore_index=True)
+        elif n_pet > n_mri:
+            # Om PET mot förmodan var fler
+            pet_only_sampled = pet_only.sample(n=n_mri, random_state=seed)
+            final_df = pd.concat([mri_only, pet_only_sampled, paired], ignore_index=True)
+
+        print(f"Efter balansering: Totalt {len(final_df)} rader.")
+    # -------------------------------------------------------------------------
+
     return final_df
 
-def load_npy_dataset(classes=["CN", "MCI", "AD"], adni_path="/home/maia-user/ADNI_npy", modalities=["mri", "amy"]):
-    """Wrapper för bakåtkompatibilitet."""
-    return load_dataset(classes=classes, adni_path_mri=adni_path, adni_path_pet=adni_path, modalities=modalities)
+def load_npy_dataset(classes=["CN", "MCI", "AD"], adni_path="/home/maia-user/ADNI_npy", modalities=["mri", "amy"], seed=42, balanced=False):
+    """Wrapper med det nya argumentet."""
+    return load_dataset(classes=classes, adni_path_mri=adni_path, adni_path_pet=adni_path, modalities=modalities, seed=seed, balanced=balanced)
