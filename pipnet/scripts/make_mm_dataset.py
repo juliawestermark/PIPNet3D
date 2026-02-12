@@ -400,12 +400,7 @@ def load_dataset(
 
         print(f"Slutligt antal rader: {len(final_df)}")
     
-    cols_to_check = []
-    for mod in modalities:
-        if mod == "mri":
-            cols_to_check.append("file_path_mri")
-        elif mod == "amy":
-            cols_to_check.append("file_path_amy")
+    cols_to_check = [f"file_path_{mod}" for mod in modalities]
     
     # Filtrera bara om vi hittade relevanta kolumner
     valid_cols = [c for c in cols_to_check if c in final_df.columns]
@@ -420,6 +415,37 @@ def load_dataset(
         diff = before_count - len(final_df)
         if diff > 0:
             print(f"[INFO] Rensade bort {diff} rader som saknade data för {modalities}.")
+    
+    # -------------------------------------------------------------------------
+    # SMART DEDUPLICERING
+    # -------------------------------------------------------------------------
+    # Om vi bara tränar på EN modalitet, får vi absolut inte ha samma bild 
+    # med olika diagnoser (labels).
+    if len(modalities) == 1:
+        mod = modalities[0]
+        col_name = f"file_path_{mod}" # T.ex. "file_path_amy"
+        
+        if col_name in final_df.columns:
+            n_before = len(final_df)
+            
+            # 1. Beräkna tidsskillnad mellan bild och diagnos-tillfälle
+            # (Vi antar att anchor_date är besöksdatumet)
+            final_df["time_diff"] = (final_df["exam_date"] - final_df["anchor_date"]).abs()
+            
+            # 2. Sortera så att minsta tidsskillnaden hamnar först
+            final_df = final_df.sort_values(by=["individual_id", "time_diff"])
+            
+            # 3. Ta bort dubbletter baserat på filvägen (behåll den första = den med minst tidsdiff)
+            final_df = final_df.drop_duplicates(subset=[col_name], keep='first')
+            
+            # Städa bort hjälpkolumnen
+            final_df = final_df.drop(columns=["time_diff"])
+            
+            n_after = len(final_df)
+            
+            if n_before > n_after:
+                print(f"[INFO] Rensade bort {n_before - n_after} dubbletter av {mod}-bilder.")
+                print(f"       (Behöll raderna där diagnosen var närmast bildens datum).")
 
     return final_df
 
