@@ -217,7 +217,7 @@ def get_mm_paths(
 
 class AugSupervisedDataset(torch.utils.data.Dataset):
     # ÄNDRING: target_shapes istället för img_shape
-    def __init__(self, X_paths, y, dic_classes, target_shapes, mod_shape, transform=None):
+    def __init__(self, X_paths, y, dic_classes, target_shapes, mod_shape, transform=None, drop_out = None):
         self.X_paths = X_paths
         self.y = y
         self.transform = transform # Detta är nu en DICTIONARY: {modality: transform}
@@ -227,6 +227,7 @@ class AugSupervisedDataset(torch.utils.data.Dataset):
         self.modalities = list(X_paths.keys())
         self.target_shapes = target_shapes # Dict: {mod: (D, H, W)}
         self.mod_shape = mod_shape # Dict: {mod: (D, H, W)} (Originalstorlek innan resize)
+        self.drop_out = drop_out
 
     def __len__(self):
         return len(self.y)
@@ -264,9 +265,35 @@ class AugSupervisedDataset(torch.utils.data.Dataset):
         out_dict = {}
         masks = {}
 
+        # --- STEG 1: KOLLA VILKA MODALITETER SOM FAKTISKT FINNS ---
+        # Vi måste veta hur många vi har INNAN vi börjar droppa dem.
+        present_modalities = []
+        for m in self.modalities:
+            path = self.X_paths[m][idx]
+            # Enkel koll om path är giltig (samma logik som i _load_volume)
+            if not (pd.isna(path) or str(path).lower() == 'nan'):
+                present_modalities.append(m)
+        
+        # Antal giltiga modaliteter för denna patient
+        num_present = len(present_modalities)
+
         for mod in self.modalities:
             path = self.X_paths[mod][idx]
             volume, mask = self._load_volume(path, mod)
+
+            should_drop = False
+            
+            if (self.drop_out is not None) and (mod in self.drop_out) and (mask == 1.0):
+                # Vi får bara droppa om vi inte gör patienten helt "tom"
+                if num_present > 1:
+                    if torch.rand(1).item() < self.drop_out[m]:
+                        should_drop = True
+            
+            if should_drop:
+                # Nolla ut volymen och masken
+                volume = self._get_empty_volume(mod)
+                mask = 0.0
+                # (Vi minskar inte num_present här, för vi baserar beslutet på originaldatat)
             
             if mask == 1.0 and self.transform:
                 # --- ÄNDRING: Hämta modalitetsspecifik transform ---
@@ -288,7 +315,7 @@ class AugSupervisedDataset(torch.utils.data.Dataset):
 
 class TwoAugSelfSupervisedDataset(torch.utils.data.Dataset):
     # ÄNDRING: target_shapes istället för img_shape
-    def __init__(self, X_paths, y, dic_classes, target_shapes, mod_shape, transform=None):
+    def __init__(self, X_paths, y, dic_classes, target_shapes, mod_shape, transform=None, drop_out=None):
         self.X_paths = X_paths
         self.y = y
         self.classes = list(dic_classes.keys())
@@ -296,6 +323,7 @@ class TwoAugSelfSupervisedDataset(torch.utils.data.Dataset):
         self.modalities = list(X_paths.keys())
         self.target_shapes = target_shapes
         self.mod_shape = mod_shape
+        self.drop_out = drop_out
 
     def __len__(self):
         return len(self.y)
@@ -324,11 +352,32 @@ class TwoAugSelfSupervisedDataset(torch.utils.data.Dataset):
         view2_dict = {}
         masks = {}
 
+        # 1. KOLLA VILKA MODALITETER SOM FINNS (För att inte droppa om bara 1 finns)
+        present_mods = []
+        for m in self.modalities:
+            p = self.X_paths[m][idx]
+            if not (pd.isna(p) or str(p).lower() == 'nan'):
+                present_mods.append(m)
+        
+        num_present = len(present_mods)
+
+        # 2. BESTÄM VILKA SOM SKA DROPPAS (Gäller både view1 och view2)
+        dropped_mods = set()
+        if self.drop_out and num_present > 1:
+            for m in present_mods:
+                if m in self.drop_out:
+                    if torch.rand(1).item() < self.drop_out[m]:
+                        dropped_mods.add(m)
+
         for mod in self.modalities:
             path = self.X_paths[mod][idx]
             
-            if pd.isna(path) or str(path).lower() == 'nan':
-                raw_tensor = self._get_empty_volume(mod) 
+            is_missing = (pd.isna(path) or str(path).lower() == 'nan')
+            is_dropped = (mod in dropped_mods)
+
+            if is_missing or is_dropped:
+                # Skapa tom tensor
+                raw_tensor = self._get_empty_volume(mod)
                 is_present = False
                 mask_val = 0.0
             else:
@@ -359,17 +408,17 @@ class TwoAugSelfSupervisedDataset(torch.utils.data.Dataset):
 
         return view1_dict, view2_dict, masks, label
 
-def create_datasets(directory_dataframe, transforms_dic, dic_classes, n_fold, current_fold, test_split, seed, target_shapes, modalities, mod_shape):
+def create_datasets(directory_dataframe, transforms_dic, dic_classes, n_fold, current_fold, test_split, seed, target_shapes, modalities, mod_shape, drop_out):
     X_train, y_train, _ = get_mm_paths(directory_dataframe, dic_classes, "train", True, n_fold, current_fold, test_split, seed, modalities)
     X_val, y_val, _ = get_mm_paths(directory_dataframe, dic_classes, "val", False, n_fold, current_fold, test_split, seed, modalities)
     X_test, y_test, _ = get_mm_paths(directory_dataframe, dic_classes, "test", False, n_fold, current_fold, test_split, seed, modalities)
 
     # transforms_dic är nu en nestlad dict: transforms_dic['train']['mri'], transforms_dic['train']['amy'] etc.
 
-    trainset = TwoAugSelfSupervisedDataset(X_train, y_train, dic_classes, target_shapes, mod_shape, transform=transforms_dic["train"])
-    trainset_pretraining = TwoAugSelfSupervisedDataset(X_train, y_train, dic_classes, target_shapes, mod_shape, transform=transforms_dic["train"])
+    trainset = TwoAugSelfSupervisedDataset(X_train, y_train, dic_classes, target_shapes, mod_shape, transform=transforms_dic["train"], drop_out=drop_out)
+    trainset_pretraining = TwoAugSelfSupervisedDataset(X_train, y_train, dic_classes, target_shapes, mod_shape, transform=transforms_dic["train"], drop_out=drop_out)
     trainset_normal = AugSupervisedDataset(X_train, y_train, dic_classes, target_shapes, mod_shape, transform=transforms_dic["train_noaug"])
-    trainset_normal_augment = AugSupervisedDataset(X_train, y_train, dic_classes, target_shapes, mod_shape, transform=transforms_dic["train"])
+    trainset_normal_augment = AugSupervisedDataset(X_train, y_train, dic_classes, target_shapes, mod_shape, transform=transforms_dic["train"], drop_out=drop_out)
     projectset = AugSupervisedDataset(X_train, y_train, dic_classes, target_shapes, mod_shape, transform=transforms_dic["project_noaug"])
     valset = AugSupervisedDataset(X_val, y_val, dic_classes, target_shapes, mod_shape, transform=transforms_dic["val"])
     testset = AugSupervisedDataset(X_test, y_test, dic_classes, target_shapes, mod_shape, transform=transforms_dic["test"])
@@ -378,7 +427,7 @@ def create_datasets(directory_dataframe, transforms_dic, dic_classes, n_fold, cu
     return trainset, trainset_pretraining, trainset_normal, trainset_normal_augment, projectset, valset, testset, testset_projection
 
 
-def get_brains(dataset_path, metadata_path, target_shapes, channels, dic_classes, n_fold, current_fold, test_split, seed, modalities, mod_shape, balanced_modalities):
+def get_brains(dataset_path, metadata_path, target_shapes, channels, dic_classes, n_fold, current_fold, test_split, seed, modalities, mod_shape, balanced_modalities, drop_out):
     
     aug_prob = 0.5
     rand_rot = 6                        # random rotation range [deg]
@@ -450,7 +499,8 @@ def get_brains(dataset_path, metadata_path, target_shapes, channels, dic_classes
         seed = seed,
         target_shapes = target_shapes, # Skickar med dict istället för tuple
         modalities = modalities,
-        mod_shape=mod_shape
+        mod_shape=mod_shape,
+        drop_out=drop_out
     )
 
 
@@ -505,7 +555,8 @@ def get_data(args: argparse.Namespace):
         seed = args.seed,
         modalities = args.modalities,
         mod_shape = args.mod_shape,
-        balanced_modalities = args.balanced_modalities
+        balanced_modalities = args.balanced_modalities,
+        drop_out=args.drop_out
         )
 
     raise Exception(f'Could not load data set, data set "{args.dataset_path}" not found!')

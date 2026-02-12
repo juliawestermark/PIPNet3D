@@ -68,7 +68,11 @@ def get_args(
         'mri': (179, 169, 208),
         'amy': (160, 160, 96),  # TODO: Change values
     }
-    balanced_modalities = True
+    balanced_modalities = False
+    drop_out = {
+        "mri": 0.2
+    }
+    # drop_out = None
     
     channels = net_dic[net]
     num_age_prototypes = 5
@@ -140,6 +144,7 @@ def get_args(
     parser.add_argument('--modalities', nargs='+', default=modalities)
     parser.add_argument('--model_name', default=model_name, help="Name of the model. Default is the modalities")
     parser.add_argument('--balanced_modalities', default=balanced_modalities, help="If the modalitites are unbalanced and we want to balanced them.")
+    parser.add_argument('--drop_out', default=drop_out, help="Dictionary with drop out probabilities.")
 
     args = parser.parse_args()
     
