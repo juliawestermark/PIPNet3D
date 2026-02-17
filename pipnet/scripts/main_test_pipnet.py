@@ -159,15 +159,32 @@ set_to_zero = []
 
 if topks:
     for prot in topks.keys():
+        
+        # --- NYTT: Hitta vilken modalitet prototypen tillhör för att få rätt tröskel ---
+        current_thr = 0.1 # Fallback
+        
+        # Om args.threshold är en dictionary (t.ex. {'mri': 0.1, 'amy': 0.01})
+        if isinstance(args.threshold, dict):
+            for mod, (start, end) in modality_indices.items():
+                if start <= prot < end:
+                    current_thr = args.threshold[mod]
+                    break
+        # Om det bara är en float (t.ex. 0.1)
+        elif args.threshold is not None:
+            current_thr = float(args.threshold)
+        # -----------------------------------------------------------------------------
+
         found = False
         for (i_id, score) in topks[prot]:
-            if score > 0.1:
+            # HÄR ÄR ÄNDRINGEN: Använd current_thr istället för hårdkodat 0.1
+            if score > current_thr:
                 found = True
+                
         if not found:
             torch.nn.init.zeros_(pipnet.module._classification.weight[:,prot])
             set_to_zero.append(prot)
-    print("Weights of prototypes", set_to_zero, "are set to zero because it is never detected with similarity>0.1 in the training set", flush=True)
-
+            
+    print("Weights of prototypes", set_to_zero, "are set to zero because they were never detected above their threshold.", flush=True)
 
 # Print weights and relevant prototypes per class
 for c in range(pipnet.module._classification.weight.shape[0]):
