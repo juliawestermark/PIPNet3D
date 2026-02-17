@@ -47,6 +47,7 @@ np.random.seed(args.seed)
         
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+print(f"Threshold: {args.threshold}")
 
 #%% Get Dataloaders for the current_fold
 print("Start time:", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
@@ -153,6 +154,62 @@ topks, img_prototype, proto_coord = visualize_topk(
     save=False,
     threshold=args.threshold
     )
+
+print("\n--- DIAGNOS: Analys av Prototyp-poäng ---", flush=True)
+
+# 1. Samla alla max-poäng per modalitet
+max_scores_per_modality = {m: [] for m in modality_indices.keys()}
+zero_prototypes_count = {m: 0 for m in modality_indices.keys()}
+
+# topks är en dict: {proto_index: [(img_idx, score), ...]}
+# Vi vill veta: Vad är den HÖGSTA poängen varje prototyp någonsin fick?
+for proto_idx in range(pipnet.module._classification.weight.shape[1]):
+    
+    # Hitta vilken modalitet prototypen tillhör
+    current_mod = None
+    for mod, (start, end) in modality_indices.items():
+        if start <= proto_idx < end:
+            current_mod = mod
+            break
+            
+    if current_mod is None: continue # Borde inte hända
+
+    # Hämta poängen från topks (om den finns)
+    if proto_idx in topks and len(topks[proto_idx]) > 0:
+        # topks[proto_idx] är en lista av tuples. Vi tar max score från den listan.
+        # Format: [(img_idx, score), (img_idx, score)...]
+        max_score = max([score for (_, score) in topks[proto_idx]])
+        max_scores_per_modality[current_mod].append(max_score)
+        
+        # Kolla om den är "död"
+        if max_score < 0.001:
+            zero_prototypes_count[current_mod] += 1
+    else:
+        # Prototypen hittades aldrig i visualize_topk
+        max_scores_per_modality[current_mod].append(0.0)
+        zero_prototypes_count[current_mod] += 1
+
+# 2. Skriv ut statistik
+for mod in modality_indices.keys():
+    scores = np.array(max_scores_per_modality[mod])
+    
+    print(f"\nModalitet: {mod.upper()}")
+    print(f"  Antal prototyper totalt: {len(scores)}")
+    print(f"  Antal 'döda' (< 0.001):   {zero_prototypes_count[mod]}")
+    
+    if len(scores) > 0:
+        print(f"  Max score (någonsin):    {scores.max():.4f}")
+        print(f"  Medel av max-scores:     {scores.mean():.4f}")
+        print(f"  Median av max-scores:    {np.median(scores):.4f}")
+        print(f"  90:e percentilen:        {np.percentile(scores, 90):.4f}")
+        
+        # Föreslå en threshold
+        suggestion = np.percentile(scores, 75) # Ta en nivå där de bästa 25% syns
+        print(f"  -> FÖRESLAGEN THRESHOLD: {suggestion:.4f} (eller lägre)")
+    else:
+        print("  [VARNING] Inga poäng registrerade alls.")
+
+print("-------------------------------------------", flush=True)
 
 # set weights of prototypes that are never really found in projection set to 0
 set_to_zero = []
