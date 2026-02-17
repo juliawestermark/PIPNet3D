@@ -34,8 +34,8 @@ def get_args(
     #dic_classes = {"CN":0, "AD":1} # {"CN":0, "MCI": 1, "AD":2}
     dic_classes = {"CN":0, "MCI": 1, "AD":2}
     #modalities = ['mri']
-    #modalities = ['amy']
-    modalities = ['mri', 'amy']
+    modalities = ['amy']
+    #modalities = ['mri', 'amy']
 
     #root_folder = "/home/maia-user/PIPNet3D/"
     root_folder = "/proj/berzbiomedicalimagingkth/users/x_julwe/PIPNet3D/"
@@ -69,10 +69,22 @@ def get_args(
         'amy': (160, 160, 96),  # TODO: Change values
     }
     balanced_modalities = False
-    drop_out = {
-        "mri": 0.2
-    }
-    # drop_out = None
+    # drop_out = {
+    #     "mri": 0.2
+    # }
+    drop_out = None
+
+    threshold = None
+
+    if len(modalities) > 1:
+        threshold = {
+            'mri': 0.4, 
+            'amy': 0.01 
+        }
+    elif "mri" in modalities:
+        threshold = 0.5
+    elif "amy" in modalities:
+        threshold = 0.5
     
     channels = net_dic[net]
     num_age_prototypes = 5
@@ -95,7 +107,7 @@ def get_args(
     freeze_epochs = 10 #10 # 1
     gamma = 0.1             # LR's decay factor
     step_size = 7           # LR's frequency decay
-    num_workers = 8
+    num_workers = 4
         
     parser = argparse.ArgumentParser('Train a PIP-Net')
     parser.add_argument('--task_performed', type = str, default = task_performed, help = 'String which differentiates between Black-box vs PIPNet training')     
@@ -145,6 +157,7 @@ def get_args(
     parser.add_argument('--model_name', default=model_name, help="Name of the model. Default is the modalities")
     parser.add_argument('--balanced_modalities', default=balanced_modalities, help="If the modalitites are unbalanced and we want to balanced them.")
     parser.add_argument('--drop_out', default=drop_out, help="Dictionary with drop out probabilities.")
+    parser.add_argument('--threshold', default=threshold, help="Dictionary/value with thresholds for inference.")
 
     args = parser.parse_args()
     

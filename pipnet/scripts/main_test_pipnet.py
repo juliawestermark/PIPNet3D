@@ -138,7 +138,8 @@ top1, img_prototype_top1, proto_coord_top1 = visualize_topk(
     args,
     plot=True,
     save=False,
-    k=1)
+    k=1,
+    threshold=args.threshold)
 
 print("\n--- Visualizing Top K Prototypes ---", flush=True)
 topks, img_prototype, proto_coord = visualize_topk(
@@ -150,6 +151,7 @@ topks, img_prototype, proto_coord = visualize_topk(
     args,
     plot=False,
     save=False,
+    threshold=args.threshold
     )
 
 # set weights of prototypes that are never really found in projection set to 0
@@ -190,13 +192,15 @@ info = eval_pipnet(
     testloader, 
     "notused", 
     device,
-    modality_ranges=modality_indices)
+    modality_ranges=modality_indices,
+    threshold=args.threshold
+    )
 
 for elem in info.items():
     print(elem)
     
 print("\n--- Getting Local Explanations ---", flush=True)
-local_explanations_test, y_preds_test, y_trues_test = get_local_explanations(pipnet, testloader, device, args, plot=True)
+local_explanations_test, y_preds_test, y_trues_test = get_local_explanations(pipnet, testloader, device, args, plot=True, threshold=args.threshold)
 
 
 #%% Evaluate the prototypes extracted

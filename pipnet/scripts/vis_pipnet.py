@@ -106,7 +106,7 @@ def get_img_coordinates(curr_slices, curr_rows, curr_cols, softmaxes_shape, patc
     return d_min, d_max, h_min, h_max, w_min, w_max
 
 @torch.no_grad()                    
-def visualize_topk(net, projectloader, num_classes, device, foldername, args, save: bool, k=10, plot=False):
+def visualize_topk(net, projectloader, num_classes, device, foldername, args, save: bool, k=10, plot=False, threshold=None):
     
     print(f"[INFO] Visualizing prototypes for topk in {os.path.join(args.log_dir, foldername)}...", flush = True)
     dir = os.path.join(args.log_dir, foldername)
@@ -171,7 +171,7 @@ def visualize_topk(net, projectloader, num_classes, device, foldername, args, sa
         ms = {key: val.to(device) for key, val in ms.items()} if ms is not None else None
 
         with torch.no_grad():
-            _, pooled, _ = net(xs, masks=ms, inference = True)
+            _, pooled, _ = net(xs, masks=ms, inference = True, threshold=threshold)
             pooled = pooled.squeeze(0)
             
             for p in range(pooled.shape[0]):
@@ -209,7 +209,7 @@ def visualize_topk(net, projectloader, num_classes, device, foldername, args, sa
             ms = {key: val.to(device) for key, val in ms.items()} if ms is not None else None
             
             with torch.no_grad():
-                softmaxes_dict, pooled, out = net(xs, masks=ms, inference = True)             
+                softmaxes_dict, pooled, out = net(xs, masks=ms, inference = True, threshold=thresholds)             
                 outmax = torch.amax(out, dim=1)[0]
             
             for p in topks.keys():

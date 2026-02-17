@@ -19,41 +19,54 @@ class PIPNet(nn.Module):
     
     def __init__(self,
                  num_classes: int,
-                 backbones: nn.ModuleDict,      # Dict: {'mri': net, 'pet': net}
-                 add_on_layers: nn.ModuleDict,  # Dict: {'mri': layer, 'pet': layer}
+                 backbones: nn.ModuleDict,      
+                 add_on_layers: nn.ModuleDict,  
                  pool_layer: nn.Module,
-                 classification_layer: nn.Module
+                 classification_layer: nn.Module,
+                 default_threshold: float = 0.1 
                  ):
         
         super().__init__()
         self._num_classes = num_classes
-        
-        # Viktigt: nn.ModuleDict registrerar sub-modulerna korrekt i PyTorch
         self._backbones = backbones
         self._add_ons = add_on_layers
-        
-        # Vi sparar nycklarna (t.ex. ['mri', 'pet']) för att garantera ordningen 
-        # när vi slår ihop vektorerna (concat).
         self.modalities = list(self._backbones.keys())
-        
         self._pool = pool_layer
         self._classification = classification_layer
         self._multiplier = classification_layer.normalization_multiplier
+        self.default_threshold = default_threshold
 
-    def forward(self, xs: dict, masks: dict = None, inference=False):
+    def forward(self, xs: dict, masks: dict = None, inference=False, threshold=None):
         """
-        xs: Dict {'mri': tensor, 'pet': tensor}
-        masks: Dict {'mri': tensor(bs, 1), 'pet': tensor(bs, 1)} (1=present, 0=missing)
+        threshold: Kan nu vara:
+                   1. None  -> Använder self.default_threshold (samma för alla)
+                   2. float -> T.ex. 0.1 (samma för alla)
+                   3. dict  -> T.ex. {'mri': 0.3, 'amy': 0.05} (olika för olika)
         """
         
         proto_features_dict = {}
         pooled_list = []
 
+        # Förbered threshold-logiken
+        current_thresholds = {}
+        if threshold is None:
+            # Fall 1: Använd default (float)
+            for m in self.modalities: current_thresholds[m] = self.default_threshold
+        elif isinstance(threshold, float) or isinstance(threshold, int):
+            # Fall 2: En float skickades in (samma för alla)
+            for m in self.modalities: current_thresholds[m] = float(threshold)
+        elif isinstance(threshold, dict):
+            # Fall 3: En dictionary skickades in (specifika krav)
+            current_thresholds = threshold
+            # Fyll på med default om någon modalitet saknas i dicten
+            for m in self.modalities:
+                if m not in current_thresholds:
+                    current_thresholds[m] = self.default_threshold
+
         for modality in self.modalities:
             x = xs[modality]
             
-            # 1. Backbone features
-            # (Även noll-bild går igenom här, det är onödig beräkning men enklast kodmässigt)
+            # 1. Backbone
             features = self._backbones[modality](x)
             
             # 2. Add-on (Prototyper)
@@ -63,25 +76,31 @@ class PIPNet(nn.Module):
             # 3. Pooling -> (bs, num_prototypes)
             pooled = self._pool(proto_features) 
             
-            # 4. MASKING (Här sker magin)
+            # 4. MASKING (Hantera saknad data)
             if masks is not None and modality in masks:
-                # masks[modality] har shape (bs, 1). pooled har (bs, ps).
-                # Broadcasting ser till att alla prototyper nollas för det samplet.
                 mask = masks[modality].to(pooled.device)
                 pooled = pooled * mask
             
+            # --- NYTT: APPLICERA THRESHOLD HÄR INNE ---
+            if inference:
+                # Hämta tröskel för just denna modalitet
+                thr = current_thresholds[modality]
+                
+                # Nolla ut allt under tröskeln
+                pooled = torch.where(pooled < thr, 0., pooled)
+
             pooled_list.append(pooled)
 
-        # 5. Fusion
+        # 5. Fusion (Nu består listan redan av thresholdade vektorer om inference=True)
         pooled_combined = torch.cat(pooled_list, dim=1) 
 
-        if inference:
-            clamped_pooled = torch.where(pooled_combined < 0.1, 0., pooled_combined)
-            out = self._classification(clamped_pooled)
-            return proto_features_dict, clamped_pooled, out
+        # Classification
+        out = self._classification(pooled_combined)
         
+        # Returnera
+        if inference:
+            return proto_features_dict, pooled_combined, out
         else:
-            out = self._classification(pooled_combined)
             return proto_features_dict, pooled_combined, out
         
         

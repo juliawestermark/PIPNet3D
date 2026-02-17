@@ -35,7 +35,8 @@ def eval_pipnet(
         device,
         log = None,  
         progress_prefix: str = 'Eval Epoch',
-        modality_ranges: dict = None 
+        modality_ranges: dict = None,
+        threshold = None
         ) -> dict:
     
     net = net.to(device)
@@ -79,7 +80,7 @@ def eval_pipnet(
         ms_device = {k: v.to(device) for k, v in ms.items()} if ms is not None else None
         
         with torch.no_grad():
-            _, pooled, out = net(xs, masks=ms_device, inference = True)
+            _, pooled, out = net(xs, masks=ms_device, inference = True, threshold=threshold)
             
             # 1. Hämta prediktioner
             max_out_score, ys_pred = torch.max(out, dim=1)
@@ -276,7 +277,8 @@ def get_local_explanations(
         args: argparse.Namespace,
         plot = False,
         plot_limit_per_modality = 20,
-        max_samples = None 
+        max_samples = None,
+        threshold = None
         ):
     
     print("Detect prototypes in predictions...", flush = True)
@@ -352,7 +354,7 @@ def get_local_explanations(
         cached_images = {} 
 
         with torch.no_grad():
-            softmaxes_dict, pooled, out = net(xs, masks=ms, inference=True) 
+            softmaxes_dict, pooled, out = net(xs, masks=ms, inference=True, threshold=threshold) 
             
             max_out_score, ys_pred = torch.max(out, dim=1) 
             y_preds.append(ys_pred.item())
