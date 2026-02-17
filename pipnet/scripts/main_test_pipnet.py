@@ -128,30 +128,30 @@ for mod in modalities:
     modality_indices[mod] = (current_offset, current_offset + num_protos)
     current_offset += num_protos
 
-print("--- PRUNING: Behåller bara de X viktigaste prototyperna per klass ---")
-# Hur många vill du ha max per klass? T.ex. 5 st ger extrem tydlighet.
-TOP_K_PER_CLASS = 5 
+# print("--- PRUNING: Behåller bara de X viktigaste prototyperna per klass ---")
+# # Hur många vill du ha max per klass? T.ex. 5 st ger extrem tydlighet.
+# TOP_K_PER_CLASS = 5 
 
-with torch.no_grad():
-    weights = pipnet.module._classification.weight
-    # Skapa en mask med bara nollor
-    new_mask = torch.zeros_like(weights)
+# with torch.no_grad():
+#     weights = pipnet.module._classification.weight
+#     # Skapa en mask med bara nollor
+#     new_mask = torch.zeros_like(weights)
     
-    for c in range(weights.shape[0]):
-        # Hämta vikterna för klass c
-        class_weights = weights[c, :]
+#     for c in range(weights.shape[0]):
+#         # Hämta vikterna för klass c
+#         class_weights = weights[c, :]
         
-        # Hitta index för de absolut största vikterna
-        # topk returnerar (values, indices)
-        _, top_indices = torch.topk(class_weights, TOP_K_PER_CLASS)
+#         # Hitta index för de absolut största vikterna
+#         # topk returnerar (values, indices)
+#         _, top_indices = torch.topk(class_weights, TOP_K_PER_CLASS)
         
-        # Sätt en 1:a i masken för dessa index
-        new_mask[c, top_indices] = 1.0
+#         # Sätt en 1:a i masken för dessa index
+#         new_mask[c, top_indices] = 1.0
 
-    # Multiplicera vikterna med masken -> Allt annat blir 0.0
-    pipnet.module._classification.weight *= new_mask
+#     # Multiplicera vikterna med masken -> Allt annat blir 0.0
+#     pipnet.module._classification.weight *= new_mask
 
-print(f"Klassificeringslagret är nu rensat. Endast topp {TOP_K_PER_CLASS} prototyper per klass används.")
+# print(f"Klassificeringslagret är nu rensat. Endast topp {TOP_K_PER_CLASS} prototyper per klass används.")
 
 #%% Get the Global Explanation
 print("\n--- Visualizing Global Explanations (Top 1) ---", flush=True)

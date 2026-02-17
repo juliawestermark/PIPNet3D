@@ -84,7 +84,7 @@ def get_args(
     elif "mri" in modalities:
         threshold = 0.5
     elif "amy" in modalities:
-        threshold = 0.5
+        threshold = 0.99
     
     channels = net_dic[net]
     num_age_prototypes = 5
