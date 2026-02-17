@@ -209,7 +209,7 @@ def visualize_topk(net, projectloader, num_classes, device, foldername, args, sa
             ms = {key: val.to(device) for key, val in ms.items()} if ms is not None else None
             
             with torch.no_grad():
-                softmaxes_dict, pooled, out = net(xs, masks=ms, inference = True, threshold=thresholds)             
+                softmaxes_dict, pooled, out = net(xs, masks=ms, inference = True, threshold=threshold)             
                 outmax = torch.amax(out, dim=1)[0]
             
             for p in topks.keys():
