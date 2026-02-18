@@ -66,79 +66,165 @@ test_projectloader = dataloaders[7]
 # -----------------------------------------------------------------------------
 # SNABB-TEST LÄGE: Klipp datasetet "In-Place" (Ingen Subset wrapper!)
 # -----------------------------------------------------------------------------
-DEBUG_SIZE = 100  # Sätt till None eller 0 för att köra allt
+DEBUG_SIZE = 20  # Sätt till None eller 0 för att köra allt
 
 if DEBUG_SIZE:
     print(f"\n[DEBUG MODE ACTIVATED] Reducing datasets to {DEBUG_SIZE} samples (In-Place Slice).\n")
     
     def slice_dataset_inplace(loader, num_samples):
         """
-        Skapar en Subset för att fixa längden, men kopierar manuellt över
-        viktiga attribut (X_paths, class_to_idx) till Subset-objektet.
+        Universell Slicer som anpassar sig efter om du kör Single- eller Multimodal.
+        Den garanterar att du får 'valid' data (inte NaN/tomma sökvägar) för de
+        modaliteter som är aktiva.
         """
-        original_dataset = loader.dataset
+        dataset = loader.dataset
         
-        # 1. Hitta säker längd
-        try:
-            full_len = len(original_dataset)
-        except:
-            if hasattr(original_dataset, 'X_paths') and hasattr(original_dataset.X_paths, '__len__'):
-                 full_len = len(original_dataset.X_paths)
+        # 1. Ta reda på total längd
+        if hasattr(dataset, 'X_paths'):
+            # Om det är en dict, ta längden på första listan
+            if isinstance(dataset.X_paths, dict):
+                first_key = list(dataset.X_paths.keys())[0]
+                full_len = len(dataset.X_paths[first_key])
             else:
-                 full_len = num_samples # Fallback
+                full_len = len(dataset.X_paths)
+        else:
+            full_len = len(dataset)
             
         limit = min(full_len, num_samples)
-        indices = list(range(limit))
         
-        print(f"  -> Creating Subset of {type(original_dataset).__name__} with {limit} samples.")
+        print(f"  -> Scanning {type(dataset).__name__} ({full_len} samples) to find valid data...")
 
-        # 2. Skapa Subset (Detta fixar __len__ problemet åt DataLoader)
-        subset = torch.utils.data.Subset(original_dataset, indices)
+        # ---------------------------------------------------------
+        # 2. Identifiera "Bra" Index (som har data för dina modaliteter)
+        # ---------------------------------------------------------
+        valid_indices_priority = [] # T.ex. de som har PET (om vi kör multimodalt)
+        valid_indices_standard = [] # T.ex. de som bara har MRI
         
-        # -----------------------------------------------------------
-        # 3. "MONKEY PATCH": Flytta över attribut som koden förväntar sig
-        # -----------------------------------------------------------
+        # Ta reda på vilka modaliteter som finns i datasetet JUST NU
+        paths_obj = dataset.X_paths if hasattr(dataset, 'X_paths') else []
         
-        # Hjälpfunktion för att klippa data
-        def safe_slice(obj, limit):
+        # Kolla om vi hanterar en dict (Multimodal) eller lista (Single)
+        is_dict = isinstance(paths_obj, dict)
+        
+        # Identifiera "Sällsynta" nycklar vi vill prioritera (för att inte missa dem i debug)
+        priority_keys = ['amy'] 
+        has_priority_key = False
+        
+        if is_dict:
+            keys = list(paths_obj.keys()) # T.ex. ['mri'] eller ['mri', 'amy']
+            # Kolla om någon av nycklarna är "priority"
+            for k in keys:
+                if any(pk in k.lower() for pk in priority_keys):
+                    has_priority_key = True
+        else:
+            keys = None # Single modal (bara en lista)
+            
+        # --- SCANNA DATASETET ---
+        for idx in range(full_len):
+            is_valid_sample = False
+            is_priority_sample = False
+            
+            if is_dict:
+                # MULTIMODAL / DICT
+                # Kolla att åtminstone en modalitet har en path (eller alla)
+                # Här kör vi strategin: Om en path finns är det ett valid sample
+                row_has_data = False
+                row_has_priority = False
+                
+                for k in keys:
+                    p = paths_obj[k][idx]
+                    # Kolla om path är "riktig" (sträng, inte nan, inte tom)
+                    if isinstance(p, str) and len(p) > 2 and "nan" not in p.lower():
+                        row_has_data = True
+                        if any(pk in k.lower() for pk in priority_keys):
+                            row_has_priority = True
+                
+                if row_has_data:
+                    if row_has_priority:
+                        valid_indices_priority.append(idx)
+                    else:
+                        valid_indices_standard.append(idx)
+
+            else:
+                # SINGLE MODAL / LISTA
+                p = paths_obj[idx] if hasattr(paths_obj, 'iloc') else paths_obj[idx]
+                if isinstance(p, str) and len(p) > 2 and "nan" not in p.lower():
+                    valid_indices_standard.append(idx)
+
+        # ---------------------------------------------------------
+        # 3. Välj ut indexen (Balansera)
+        # ---------------------------------------------------------
+        selected_indices = []
+        
+        # Om vi hittade prioriterad data (t.ex. PET), fyll upp halva kvoten med den
+        if valid_indices_priority:
+            take_n = min(len(valid_indices_priority), limit // 2 if valid_indices_standard else limit)
+            selected_indices.extend(valid_indices_priority[:take_n])
+            print(f"     Prioritized {take_n} samples containing AMY.")
+            
+        # Fyll på resten med standard (eller mer priority om det finns)
+        remaining = limit - len(selected_indices)
+        
+        # Lägg till standard (t.ex. MRI)
+        if remaining > 0 and valid_indices_standard:
+            take_std = min(len(valid_indices_standard), remaining)
+            selected_indices.extend(valid_indices_standard[:take_std])
+            remaining -= take_std
+            
+        # Om fortfarande plats och vi har fler priority över
+        if remaining > 0 and len(valid_indices_priority) > len(selected_indices):
+            # Hitta de vi inte tog
+            used_set = set(selected_indices)
+            rest_prio = [i for i in valid_indices_priority if i not in used_set]
+            selected_indices.extend(rest_prio[:remaining])
+
+        # Sortera index för ordningens skull
+        selected_indices.sort()
+        actual_limit = len(selected_indices)
+        
+        print(f"  -> Selected {actual_limit} valid samples based on available modalities.")
+
+        # ---------------------------------------------------------
+        # 4. Skapa Subset & Patcha (Detta känner du igen)
+        # ---------------------------------------------------------
+        subset = torch.utils.data.Subset(dataset, selected_indices)
+        
+        def index_slice(obj, indices):
             if isinstance(obj, dict):
-                return {k: safe_slice(v, limit) for k, v in obj.items()}
-            if hasattr(obj, 'iloc'):
-                return obj.iloc[:limit]
-            return obj[:limit]
+                return {k: index_slice(v, indices) for k, v in obj.items()}
+            if hasattr(obj, 'iloc'): # Pandas
+                return obj.iloc[indices]
+            if isinstance(obj, list): # Lista
+                return [obj[i] for i in indices]
+            if hasattr(obj, 'numpy'): # Tensor
+                return obj[indices]
+            return obj[:len(indices)]
 
-        # A) Data som ska KLIPPAS (matcha de 100 bilderna)
-        if hasattr(original_dataset, 'X_paths'):
-            subset.X_paths = safe_slice(original_dataset.X_paths, limit)
+        # Kopiera över X_paths (viktigast!)
+        if hasattr(dataset, 'X_paths'):
+            subset.X_paths = index_slice(dataset.X_paths, selected_indices)
             
-        if hasattr(original_dataset, 'ys'):
-            subset.ys = safe_slice(original_dataset.ys, limit)
+        # Kopiera ys
+        if hasattr(dataset, 'ys'):
+            subset.ys = index_slice(dataset.ys, selected_indices)
             
-        if hasattr(original_dataset, 'image_paths'):
-            subset.image_paths = safe_slice(original_dataset.image_paths, limit)
+        # Kopiera metadata rakt av
+        if hasattr(dataset, 'class_to_idx'):
+            subset.class_to_idx = dataset.class_to_idx
+        if hasattr(dataset, 'col_names'):
+            subset.col_names = dataset.col_names
+        if hasattr(dataset, 'image_paths'):
+             subset.image_paths = index_slice(dataset.image_paths, selected_indices)
 
-        # B) Metadata som ska KOPIERAS (ska INTE klippas)
-        # class_to_idx är en dict typ {'CN':0, 'AD':1}, den ska vara intakt.
-        if hasattr(original_dataset, 'class_to_idx'):
-            subset.class_to_idx = original_dataset.class_to_idx
-            
-        # Kopiera även col_names eller andra config-attribut om de finns
-        if hasattr(original_dataset, 'col_names'):
-            subset.col_names = original_dataset.col_names
-
-        # -----------------------------------------------------------
-
-        # 4. Skapa ny DataLoader
+        # Skapa DataLoader
         new_loader = torch.utils.data.DataLoader(
             subset,
             batch_size=loader.batch_size,
             shuffle=False, 
-            num_workers=0, # Sätt till 0 för att undvika strul vid debug
+            num_workers=4, # 0 workers är säkrast vid debug
             pin_memory=loader.pin_memory
         )
         
-        # Dubbelkolla längden
-        print(f"  -> New DataLoader length: {len(new_loader)} batches (Total samples: {len(subset)})")
         return new_loader
 
     # Applicera på dina loaders
