@@ -62,6 +62,71 @@ projectloader = dataloaders[4]
 valloader = dataloaders[5]
 testloader = dataloaders[6] 
 test_projectloader = dataloaders[7]
+
+# -----------------------------------------------------------------------------
+# SNABB-TEST LÄGE: Klipp datasetet "In-Place" (Ingen Subset wrapper!)
+# -----------------------------------------------------------------------------
+DEBUG_SIZE = 100  # Sätt till None eller 0 för att köra allt
+
+if DEBUG_SIZE:
+    print(f"\n[DEBUG MODE ACTIVATED] Reducing datasets to {DEBUG_SIZE} samples (In-Place Slice).\n")
+    
+    def slice_dataset_inplace(loader, num_samples):
+        """
+        Klipper datasetet säkert oavsett om det är Pandas, Listor eller Dictionaries.
+        """
+        dataset = loader.dataset
+        current_len = len(dataset)
+        limit = min(current_len, num_samples)
+        
+        print(f"  -> Slicing {type(dataset).__name__} from {current_len} to {limit} samples.")
+
+        # Hjälpfunktion för att klippa ett objekt
+        def safe_slice(obj, limit):
+            # 1. Om det är en Dictionary (t.ex. {'mri': [...], 'amy': [...]})
+            if isinstance(obj, dict):
+                return {k: safe_slice(v, limit) for k, v in obj.items()}
+            
+            # 2. Om det är Pandas (Series/DataFrame) -> Använd .iloc
+            if hasattr(obj, 'iloc'):
+                return obj.iloc[:limit]
+            
+            # 3. Annars (Vanlig lista eller Numpy array) -> Använd vanlig slice
+            return obj[:limit]
+
+        # --- Applicera på X_paths ---
+        if hasattr(dataset, 'X_paths'):
+            dataset.X_paths = safe_slice(dataset.X_paths, limit)
+
+        # --- Applicera på ys (Labels) ---
+        if hasattr(dataset, 'ys'):
+            dataset.ys = safe_slice(dataset.ys, limit)
+            
+        # --- Applicera på image_paths (Vissa PIPNet-versioner använder detta) ---
+        if hasattr(dataset, 'image_paths'):
+            dataset.image_paths = safe_slice(dataset.image_paths, limit)
+
+        # --- Applicera på indices (om det finns) ---
+        if hasattr(dataset, 'indices'):
+            dataset.indices = safe_slice(dataset.indices, limit)
+
+        # Skapa ny DataLoader
+        new_loader = torch.utils.data.DataLoader(
+            dataset,
+            batch_size=loader.batch_size,
+            shuffle=False, 
+            num_workers=loader.num_workers,
+            pin_memory=loader.pin_memory
+        )
+        return new_loader
+
+    # Applicera på dina loaders
+    # Eftersom vi ändrar dataset-objektet, slår detta igenom överallt
+    projectloader = slice_dataset_inplace(projectloader, DEBUG_SIZE)
+    testloader = slice_dataset_inplace(testloader, DEBUG_SIZE)
+    
+    # Om du använder OOD loaders senare, kör funktionen på dem också!
+# -----------------------------------------------------------------------------
     
     
 #%% Evaluate 3D-PIPNet trained for the current_fold
