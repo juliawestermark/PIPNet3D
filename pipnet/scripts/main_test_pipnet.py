@@ -109,6 +109,9 @@ if DEBUG_SIZE:
         # --- Applicera på indices (om det finns) ---
         if hasattr(dataset, 'indices'):
             dataset.indices = safe_slice(dataset.indices, limit)
+        
+        dataset.__len__ = lambda self=None: limit
+
 
         # Skapa ny DataLoader
         new_loader = torch.utils.data.DataLoader(
@@ -118,6 +121,7 @@ if DEBUG_SIZE:
             num_workers=loader.num_workers,
             pin_memory=loader.pin_memory
         )
+        print(f"  -> New DataLoader length: {len(new_loader)} batches (Total samples: {len(dataset)})")
         return new_loader
 
     # Applicera på dina loaders
