@@ -301,7 +301,27 @@ def get_local_explanations(
     except AttributeError:
         idx_to_class = {}
 
-    dataset_paths = projectloader.dataset.X_paths
+    # dataset_paths = projectloader.dataset.X_paths
+    # ---------------------------------------------------------
+    # FIX FÖR SUBSET (När vi kör snabb-test)
+    # ---------------------------------------------------------
+    
+    # Kolla om datasetet är en Subset (dvs. krympt version)
+    if isinstance(projectloader.dataset, torch.utils.data.Subset):
+        # 1. Hämta original-datasetet som gömmer sig inuti
+        original_dataset = projectloader.dataset.dataset
+        
+        # 2. Hämta alla paths från originalet
+        full_paths = original_dataset.X_paths
+        
+        # 3. Filtrera ut BARA de paths som ingår i vår subset
+        # (Subset.indices talar om vilka bilder vi valt ut)
+        dataset_paths = [full_paths[i] for i in projectloader.dataset.indices]
+        
+    else:
+        # Vanligt fall (Hela datasetet)
+        dataset_paths = projectloader.dataset.X_paths
+    # ---------------------------------------------------------
     
     net.eval()
     classification_weights = net.module._classification.weight
