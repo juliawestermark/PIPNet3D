@@ -73,55 +73,72 @@ if DEBUG_SIZE:
     
     def slice_dataset_inplace(loader, num_samples):
         """
-        Klipper datasetet säkert oavsett om det är Pandas, Listor eller Dictionaries.
+        Skapar en Subset för att fixa längden, men kopierar manuellt över
+        viktiga attribut (X_paths, class_to_idx) till Subset-objektet.
         """
-        dataset = loader.dataset
-        current_len = len(dataset)
-        limit = min(current_len, num_samples)
+        original_dataset = loader.dataset
         
-        print(f"  -> Slicing {type(dataset).__name__} from {current_len} to {limit} samples.")
+        # 1. Hitta säker längd
+        try:
+            full_len = len(original_dataset)
+        except:
+            if hasattr(original_dataset, 'X_paths') and hasattr(original_dataset.X_paths, '__len__'):
+                 full_len = len(original_dataset.X_paths)
+            else:
+                 full_len = num_samples # Fallback
+            
+        limit = min(full_len, num_samples)
+        indices = list(range(limit))
+        
+        print(f"  -> Creating Subset of {type(original_dataset).__name__} with {limit} samples.")
 
-        # Hjälpfunktion för att klippa ett objekt
+        # 2. Skapa Subset (Detta fixar __len__ problemet åt DataLoader)
+        subset = torch.utils.data.Subset(original_dataset, indices)
+        
+        # -----------------------------------------------------------
+        # 3. "MONKEY PATCH": Flytta över attribut som koden förväntar sig
+        # -----------------------------------------------------------
+        
+        # Hjälpfunktion för att klippa data
         def safe_slice(obj, limit):
-            # 1. Om det är en Dictionary (t.ex. {'mri': [...], 'amy': [...]})
             if isinstance(obj, dict):
                 return {k: safe_slice(v, limit) for k, v in obj.items()}
-            
-            # 2. Om det är Pandas (Series/DataFrame) -> Använd .iloc
             if hasattr(obj, 'iloc'):
                 return obj.iloc[:limit]
-            
-            # 3. Annars (Vanlig lista eller Numpy array) -> Använd vanlig slice
             return obj[:limit]
 
-        # --- Applicera på X_paths ---
-        if hasattr(dataset, 'X_paths'):
-            dataset.X_paths = safe_slice(dataset.X_paths, limit)
-
-        # --- Applicera på ys (Labels) ---
-        if hasattr(dataset, 'ys'):
-            dataset.ys = safe_slice(dataset.ys, limit)
+        # A) Data som ska KLIPPAS (matcha de 100 bilderna)
+        if hasattr(original_dataset, 'X_paths'):
+            subset.X_paths = safe_slice(original_dataset.X_paths, limit)
             
-        # --- Applicera på image_paths (Vissa PIPNet-versioner använder detta) ---
-        if hasattr(dataset, 'image_paths'):
-            dataset.image_paths = safe_slice(dataset.image_paths, limit)
+        if hasattr(original_dataset, 'ys'):
+            subset.ys = safe_slice(original_dataset.ys, limit)
+            
+        if hasattr(original_dataset, 'image_paths'):
+            subset.image_paths = safe_slice(original_dataset.image_paths, limit)
 
-        # --- Applicera på indices (om det finns) ---
-        if hasattr(dataset, 'indices'):
-            dataset.indices = safe_slice(dataset.indices, limit)
-        
-        dataset.__len__ = lambda self=None: limit
+        # B) Metadata som ska KOPIERAS (ska INTE klippas)
+        # class_to_idx är en dict typ {'CN':0, 'AD':1}, den ska vara intakt.
+        if hasattr(original_dataset, 'class_to_idx'):
+            subset.class_to_idx = original_dataset.class_to_idx
+            
+        # Kopiera även col_names eller andra config-attribut om de finns
+        if hasattr(original_dataset, 'col_names'):
+            subset.col_names = original_dataset.col_names
 
+        # -----------------------------------------------------------
 
-        # Skapa ny DataLoader
+        # 4. Skapa ny DataLoader
         new_loader = torch.utils.data.DataLoader(
-            dataset,
+            subset,
             batch_size=loader.batch_size,
             shuffle=False, 
-            num_workers=loader.num_workers,
+            num_workers=0, # Sätt till 0 för att undvika strul vid debug
             pin_memory=loader.pin_memory
         )
-        print(f"  -> New DataLoader length: {len(new_loader)} batches (Total samples: {len(dataset)})")
+        
+        # Dubbelkolla längden
+        print(f"  -> New DataLoader length: {len(new_loader)} batches (Total samples: {len(subset)})")
         return new_loader
 
     # Applicera på dina loaders
