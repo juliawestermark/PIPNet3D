@@ -62,7 +62,45 @@ projectloader = dataloaders[4]
 valloader = dataloaders[5]
 testloader = dataloaders[6] 
 test_projectloader = dataloaders[7]
+
+# -----------------------------------------------------------------------------
+DEBUG_SIZE = 100  # Sätt denna till None eller 0 om du vill köra allt sen
+
+if DEBUG_SIZE:
+    print(f"\n[DEBUG MODE ACTIVATED] Reducing datasets to {DEBUG_SIZE} samples for speed testing.\n")
+    from torch.utils.data import Subset
+
+    def shrink_dataloader(loader, num_samples):
+        # 1. Hämta original-datasetet
+        dataset = loader.dataset
+        
+        # 2. Skapa index (antingen de första N, eller slumpmässiga N)
+        # Vi tar de första N här för reproducerbarhet
+        indices = list(range(min(len(dataset), num_samples)))
+        
+        # 3. Skapa en Subset
+        subset = Subset(dataset, indices)
+        
+        # 4. Skapa en ny DataLoader med samma inställningar
+        new_loader = torch.utils.data.DataLoader(
+            subset,
+            batch_size=loader.batch_size,
+            shuffle=False, # Viktigt att ha False för test/val
+            num_workers=loader.num_workers,
+            pin_memory=loader.pin_memory
+        )
+        return new_loader
+
+    # Applicera på de loaders du faktiskt använder i skriptet
+    projectloader = shrink_dataloader(projectloader, DEBUG_SIZE)
+    testloader = shrink_dataloader(testloader, DEBUG_SIZE)
     
+    # Om du använder test_projectloader eller valloader nere i koden, krymp dem också:
+    # test_projectloader = shrink_dataloader(test_projectloader, DEBUG_SIZE)
+    
+    print(f"New testloader size: {len(testloader.dataset)} images")
+    print(f"New projectloader size: {len(projectloader.dataset)} images")
+# -----------------------------------------------------------------------------
     
 #%% Evaluate 3D-PIPNet trained for the current_fold
 print("Start testing time:", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
@@ -435,6 +473,9 @@ for percent in [95.]:
     # Vi hämtar testloader (index 6) från ood dataloaders
     ood_dataloaders = get_dataloaders(ood_args)
     ood_testloader = ood_dataloaders[6] # Test set of OOD data
+
+    if DEBUG_SIZE:
+        ood_testloader = shrink_dataloader(ood_testloader, DEBUG_SIZE)
     
     id_fraction = eval_ood(
         pipnet, ood_testloader, args.epochs, device, class_thresholds)

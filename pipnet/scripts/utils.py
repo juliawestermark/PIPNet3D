@@ -34,8 +34,8 @@ def get_args(
     #dic_classes = {"CN":0, "AD":1} # {"CN":0, "MCI": 1, "AD":2}
     dic_classes = {"CN":0, "MCI": 1, "AD":2}
     #modalities = ['mri']
-    modalities = ['amy']
-    #modalities = ['mri', 'amy']
+    #modalities = ['amy']
+    modalities = ['mri', 'amy']
 
     #root_folder = "/home/maia-user/PIPNet3D/"
     root_folder = "/proj/berzbiomedicalimagingkth/users/x_julwe/PIPNet3D/"
@@ -78,11 +78,11 @@ def get_args(
 
     if len(modalities) > 1:
         threshold = {
-            'mri': 0.4, 
-            'amy': 0.01 
+            'mri': 0.1, 
+            'amy': 0.001 
         }
     elif "mri" in modalities:
-        threshold = 0.5
+        threshold = 0.99
     elif "amy" in modalities:
         threshold = 0.99
     
