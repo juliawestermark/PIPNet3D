@@ -24,6 +24,8 @@ import random
 from tqdm.auto import tqdm
 import pandas as pd
 
+import gc
+
 # Regex för att hitta Subject ID i filnamn
 _pattern_subj = re.compile(r"(\d{3}_S_\d+)")
 
@@ -209,20 +211,22 @@ def visualize_topk(net, projectloader, num_classes, device, foldername, args, sa
             
     abstained = 0
     
-    # === STEG 2: LOKALISERA OCH SPARA PATCHES ===
-    desc_text = f"Localize"
+    # === STEG 2: LOKALISERA OCH PLOTTA DIREKT (Minnessnålt!) ===
+    desc_text = f"Localize & Plot"
     img_iter = tqdm(enumerate(projectloader), total=len(projectloader), desc=desc_text, mininterval=2., ncols=0)
     
     for i, (xs, ms, ys) in img_iter:
+        # Om bilden finns med i vår "Top-K" lista för någon prototyp
         if i in alli:
             ys = ys.to(device)
             xs = {key: val.to(device) for key, val in xs.items()}
             ms = {key: val.to(device) for key, val in ms.items()} if ms is not None else None
             
             with torch.no_grad():
-                softmaxes_dict, pooled, out = net(xs, masks=ms, inference = True, threshold=threshold)             
+                softmaxes_dict, pooled, out = net(xs, masks=ms, inference=True, threshold=threshold)             
                 outmax = torch.amax(out, dim=1)[0]
             
+            # Gå igenom prototyperna för att se VILKA som ville ha denna bild
             for p in topks.keys():
                 if p not in prototypes_not_used:
                     for idx, score in topks[p]:
@@ -234,7 +238,7 @@ def visualize_topk(net, projectloader, num_classes, device, foldername, args, sa
                             
                             img_tensor = xs[target_mod].cpu()
 
-                            # 1. Hoppa över om bilden är tom (missing modality)
+                            # Hoppa över om bilden är tom
                             if img_tensor.max() <= img_tensor.min() + 1e-9:
                                 continue
 
@@ -248,108 +252,77 @@ def visualize_topk(net, projectloader, num_classes, device, foldername, args, sa
                             h_idx = max_idx_per_prototype_h[local_p, max_idx_per_prototype_w[local_p]].item()
                             w_idx = max_idx_per_prototype_w[local_p].item()
                             
-                            if img_tensor.shape[1] == 1:
-                                img_tensor = img_tensor.repeat(1, 3, 1, 1, 1)
-                            
-                            # --- 2. HÄMTA FAKTISKA DIMENSIONER ---
-                            curr_slices = img_tensor.shape[2]
-                            curr_rows = img_tensor.shape[3]
-                            curr_cols = img_tensor.shape[4]
-                            
-                            # --- 3. BERÄKNA PATCH SIZE FÖR DENNA BILD ---
-                            # Använd den nya funktionen här!
+                            # Beräkna koordinater
+                            curr_slices, curr_rows, curr_cols = img_tensor.shape[2], img_tensor.shape[3], img_tensor.shape[4]
                             patchsize, skip_z, skip_y, skip_x = get_patch_size_dynamic((curr_slices, curr_rows, curr_cols), args)
-                            
-                            # --- 4. BERÄKNA KOORDINATER MED LOKALA DIMENSIONER ---
-                            # Skicka in curr_slices etc istället för args.slices
-                            ps_coord = get_img_coordinates(
-                                curr_slices, curr_rows, curr_cols, 
-                                softmaxes.shape, 
-                                patchsize, skip_z, skip_y, skip_x, 
-                                d_idx, h_idx, w_idx
-                            )
-                            
+                            ps_coord = get_img_coordinates(curr_slices, curr_rows, curr_cols, softmaxes.shape, patchsize, skip_z, skip_y, skip_x, d_idx, h_idx, w_idx)
                             d_min, d_max, h_min, h_max, w_min, w_max = ps_coord
                             
-                            # --- 5. VALIDERA ATT PATCHEN ÄR GILTIG ---
                             if (d_max <= d_min) or (h_max <= h_min) or (w_max <= w_min):
                                 continue
 
-                            img_path = dataset_paths[target_mod][i]
-                            img_tensor_patch = img_tensor[0, :, d_min:d_max, h_min:h_max, w_min:w_max]
-                                    
-                            saved[p]+=1
-                            tensors_per_prototype[p].append(img_tensor_patch.numpy())
-                            img_prototype_info[p].append((i, target_mod, img_path))
-                            proto_coord[p].append(ps_coord)
+                            # --- RITA OCH SPARA DIREKT HÄR ---
+                            
+                            # 1. Klipp ut patchen
+                            img_tensor_patch = img_tensor[0, :, d_min:d_max, h_min:h_max, w_min:w_max].clone()
+                            if img_tensor_patch.shape[0] == 1:
+                                img_tensor_patch = img_tensor_patch.repeat(3, 1, 1, 1) # Gör patchen till RGB
+                            
+                            # 2. Förbered hela bilden med röd låda
+                            img_tensor_full = img_tensor.clone()
+                            if img_tensor_full.shape[1] == 1:
+                                img_tensor_full = img_tensor_full.repeat(1, 3, 1, 1, 1)
                                 
+                            spatial_mask = create_edge_mask_spatial(img_tensor_full.shape, d_min, d_max, h_min, h_max, w_min, w_max)
+                            img_tensor_full[:, 0:1][spatial_mask] = 1.0  # Röd kanal
+                            img_tensor_full[:, 1:2][spatial_mask] = 0.0  # Grön
+                            img_tensor_full[:, 2:3][spatial_mask] = 0.0  # Blå
+                            
+                            image_to_save = img_tensor_full.numpy()
+                            patch_to_save = img_tensor_patch.numpy()
+
+                            # 3. Skapa filnamn
+                            img_path = dataset_paths[target_mod][i]
+                            try:
+                                img_str = str(img_path)
+                                match_subj = _pattern_subj.search(img_str)
+                                subj = match_subj.group(1) if match_subj else "UnkSubj"
+                                base_name = os.path.basename(img_str)
+                                exam, _ = os.path.splitext(base_name)
+                            except:
+                                subj, exam = "unknown", "unknown"
+                                
+                            text = "f_" + str(args.current_fold) + "_p_" + str(p)
+                            ps_name = text + "_" + target_mod + "_" + subj + "_" + exam
+                            ps_patch_name = text + "_" + target_mod + "_patch_" + subj + "_" + exam
+                            
+                            plot_name = os.path.join(plot_dir, ps_name + ".png")
+                            plot_patch_name = os.path.join(plot_dir, ps_patch_name + ".png")
+                            
+                            # 4. Spara och Plotta
+                            if plot:
+                                try:
+                                    plot_rgb_slices(image_to_save[0], title=f"Proto {p} ({target_mod})", num_columns=10, bottom=True, save_path=plot_name)   
+                                    plot_rgb_slices(patch_to_save, title=f"Proto {p} Patch", num_columns=6, bottom=True, save_path=plot_patch_name)
+                                except Exception as e:
+                                    print(f"Error plotting {ps_name}: {e}")
+                                
+                            if save:
+                                np.save(os.path.join(save_dir, ps_name), image_to_save[0])
+                                np.save(os.path.join(save_dir, ps_patch_name), patch_to_save)
+                                
+                            saved[p] += 1
+                            
+                            # 5. FRIGÖR MINNET DIREKT (Magin händer här!)
+                            del img_tensor_full, image_to_save, patch_to_save, spatial_mask, img_tensor_patch
+                            gc.collect()
 
     print("Abstained: ", abstained, flush = True)
     
-    # === STEG 3: PLOTTA ===
-    for p in tqdm(range(num_prototypes), desc="Processing prototypes"):
-        if saved[p] > 0:
-            text = "f_" + str(args.current_fold) + "_p_" + str(p)
-            
-            for (dataset_idx, mod, img_name), tensor, ps_coord in zip(img_prototype_info[p], tensors_per_prototype[p], proto_coord[p]):
-                
-                try:
-                    inputs_dict, _, _ = projectloader.dataset[dataset_idx]
-                    img_tensor_raw = inputs_dict[mod]
-                    
-                    if img_tensor_raw.max() <= img_tensor_raw.min() + 1e-9:
-                        continue
-
-                    img_tensor = img_tensor_raw.unsqueeze(0) 
-                    if img_tensor.shape[1] == 1:
-                        img_tensor = img_tensor.repeat(1, 3, 1, 1, 1)
-                        
-                except Exception as e:
-                    print(f"[ERROR] Could not fetch index {dataset_idx}: {e}")
-                    continue
-
-                d_min, d_max, h_min, h_max, w_min, w_max = ps_coord
-                
-                # Använd mask-funktionen. Den borde nu vara säker eftersom koordinaterna
-                # är baserade på bildens verkliga storlek.
-                spatial_mask = create_edge_mask_spatial(img_tensor.shape, d_min, d_max, h_min, h_max, w_min, w_max)
-
-                img_tensor[:, 0:1][spatial_mask] = 1.0  # Röd kanal = Max
-                img_tensor[:, 1:2][spatial_mask] = 0.0  # Grön kanal = 0
-                img_tensor[:, 2:3][spatial_mask] = 0.0  # Blå kanal = 0
-                
-                image = img_tensor.detach().cpu().numpy() 
-
-                try:
-                    img_str = str(img_name)
-                    match_subj = _pattern_subj.search(img_str)
-                    subj = match_subj.group(1) if match_subj else "UnkSubj"
-                    base_name = os.path.basename(img_str)
-                    exam, _ = os.path.splitext(base_name)
-                except:
-                    subj, exam = "unknown", "unknown"
-                    
-                ps_name = text + "_" + mod + "_" + subj + "_" + exam
-                ps_patch_name = text + "_" + mod + "_patch_" + subj + "_" + exam
-                
-                plot_name = plot_dir + "/" + ps_name + ".png"
-                plot_patch_name = plot_dir + "/" + ps_patch_name + ".png"
-                
-                if plot:
-                    try:
-                        if np.all(image == 0) or np.any(np.array(image.shape) == 0):
-                             continue
-
-                        plot_rgb_slices(image[0,:,:,:,:], title = f"Proto {p} ({mod})", num_columns = 10, bottom=True, save_path=plot_name)   
-                        plot_rgb_slices(tensor[:,:,:,:], title = f"Proto {p} Patch", num_columns = 6, bottom=True, save_path=plot_patch_name)
-                    except Exception as e:
-                        print(f"Error plotting {ps_name}: {e}")
-                    
-                if save:
-                    np.save(os.path.join(save_dir, ps_name), image[0,:,:,:,:])
-                    np.save(os.path.join(save_dir, ps_patch_name), tensor[:,:,:,:])
-
-    return topks, img_prototype_info, proto_coord
+    # OBS: Vi måste returnera tomma dicts för de variabler som huvudskriptet förväntar sig, 
+    # eftersom vi nu inte sparar dessa listor i RAM längre!
+    return topks, dict(), dict()
+    
 
 def plot_local_explanation(xs, local_explanation, modality_offsets, title="", save_path=None):
     if not isinstance(xs, dict):
