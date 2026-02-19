@@ -46,7 +46,7 @@ def get_args(
     model_path = os.path.join(root_folder, "pipnet", "models")
     model_name1 = "_".join(mod for mod in modalities)
     model_name2 = "_".join(cl for cl in dic_classes.keys())
-    model_name = f"{model_name1}_{model_name2}"
+    #model_name = f"{model_name1}_{model_name2}"
 
     global_mask_paths = {}
     
@@ -69,10 +69,10 @@ def get_args(
         'amy': (160, 160, 96),  # TODO: Change values
     }
     balanced_modalities = False
-    # drop_out = {
-    #     "mri": 0.2
-    # }
-    drop_out = None
+    drop_out = {
+        "mri": 0.1
+    }
+    #drop_out = None
 
     threshold = None
 
@@ -86,11 +86,16 @@ def get_args(
     elif "amy" in modalities:
         threshold = 0.9
     
+    threshold = None
+
+    bal_text = "bal" if balanced_modalities else "unbal"
+    model_name = f"{model_name1}_{model_name2}_{bal_text}"
+
     channels = net_dic[net]
     num_age_prototypes = 5
     num_classes = len(dic_classes)
     out_shape = num_classes
-    task_performed_name = f"{task_performed}_{model_name}_{downscaling}"
+    task_performed_name = f"{task_performed}_{model_name}"
     experiment_folder = os.path.join(root_folder, "results", task_performed_name, net, "fold_" + str(current_fold))
     
     batch_size_pretrain = 12 #16 # 2
@@ -107,7 +112,7 @@ def get_args(
     freeze_epochs = 10 #10 # 1
     gamma = 0.1             # LR's decay factor
     step_size = 7           # LR's frequency decay
-    num_workers = 4
+    num_workers = 8
         
     parser = argparse.ArgumentParser('Train a PIP-Net')
     parser.add_argument('--task_performed', type = str, default = task_performed, help = 'String which differentiates between Black-box vs PIPNet training')     
