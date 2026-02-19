@@ -136,19 +136,30 @@ def visualize_topk(net, projectloader, num_classes, device, foldername, args, sa
     modalities = list(dataset_paths.keys())
     modality_offsets = {}
     current_offset = 0
+
     if hasattr(net.module, 'modalities'):
         modalities = net.module.modalities
-    
+        
     for mod in modalities:
         add_on_module = net.module._add_ons[mod]
-        num_protos_mod = 0
-        for m in add_on_module.modules():
-            if isinstance(m, torch.nn.Conv3d):
-                num_protos_mod = m.out_channels
-                break
-        if num_protos_mod == 0: num_protos_mod = 512
-        modality_offsets[mod] = (current_offset, current_offset + num_protos_mod)
-        current_offset += num_protos_mod
+        num_protos = 0
+        
+        if hasattr(add_on_module, '_num_prototypes'):
+             num_protos = add_on_module._num_prototypes
+        else:
+            for m in add_on_module.modules():
+                if isinstance(m, torch.nn.Conv3d):
+                    num_protos = m.out_channels
+                    break
+        
+        # Fallback till args
+        if num_protos == 0:
+            num_protos = getattr(args, 'num_features', 512)
+            if num_protos == 0: 
+                num_protos = 512 
+
+        modality_offsets[mod] = (current_offset, current_offset + num_protos)
+        current_offset += num_protos
         
     def get_modality_for_proto(p_idx):
         for mod, (start, end) in modality_offsets.items():

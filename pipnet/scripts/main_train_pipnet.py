@@ -182,6 +182,32 @@ with torch.no_grad():
 
         print("Classification layer initialized", flush = True)
 
+# --- SETUP MODALITY OFFSETS ---
+modalities = list(net.module._add_ons.keys()) 
+modality_offsets = {}
+current_offset = 0
+
+for mod in modalities:
+    add_on_module = net.module._add_ons[mod]
+    num_protos = 0
+    if hasattr(add_on_module, '_num_prototypes'):
+         num_protos = add_on_module._num_prototypes
+    else:
+        for m in add_on_module.modules():
+            if isinstance(m, torch.nn.Conv3d):
+                num_protos = m.out_channels
+                break
+    
+    if num_protos == 0:
+        num_protos = getattr(args, 'num_features', 512)
+        if num_protos == 0: num_protos = 512 
+
+    modality_offsets[mod] = (current_offset, current_offset + num_protos)
+    current_offset += num_protos
+
+print(f"\n[INFO] Modality offsets fördelade: {modality_offsets}", flush=True)
+# ------------------------------
+
 # Loss & Scheduler
 criterion = nn.NLLLoss(reduction='mean').to(device)
 
@@ -366,6 +392,17 @@ for epoch in range(1, args.epochs + 1):
     
     # Evaluate
     eval_info = eval_pipnet(net, valloader, epoch, device, log)
+
+    # --- DIN NYA DYNAMISKA SMYGTITT ---
+    with torch.no_grad():
+        w = net.module._classification.weight
+        print(f"\n---> SMYGTITT EPOK {epoch} <---", flush=True)
+        
+        for mod, (start, end) in modality_offsets.items():
+            # Plockar ut alla klassers vikter för just denna modalitets prototyper
+            active_count = (w[:, start:end] > 1e-3).sum().item()
+            print(f"Aktiva vikter | {mod.upper()}: {active_count}", flush=True)
+        print("-" * 30, flush=True)
     
     log.log_values('log_epoch_overview',  epoch, eval_info['top1_accuracy'], eval_info['top3_accuracy'], eval_info['almost_sim_nonzeros'], eval_info['local_size_all_classes'], eval_info['almost_nonzeros'], eval_info['num non-zero prototypes'], train_info['train_accuracy'], train_info['loss'])
     

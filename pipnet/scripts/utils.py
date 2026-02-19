@@ -68,11 +68,18 @@ def get_args(
         'mri': (179, 169, 208),
         'amy': (160, 160, 96),  # TODO: Change values
     }
-    balanced_modalities = False
-    drop_out = {
-        "mri": 0.6
+
+    lr_mult = {
+        "mri": 0.01,
+        "amy": 1.0
     }
-    #drop_out = None
+    #lr_mult = None
+    
+    balanced_modalities = False
+    #drop_out = {
+    #    "mri": 0.6
+    #}
+    drop_out = None
 
     threshold = None
 
@@ -90,12 +97,17 @@ def get_args(
 
     #bal_text = "bal" if balanced_modalities else "unbal"
     #model_name = f"{model_name1}_{model_name2}_{bal_text}"
+    other = None
 
     if len(modalities) > 1:
         bal_text = "bal" if balanced_modalities else "unbal"
         model_name = f"{model_name1}_{model_name2}_{bal_text}"
     else:
         model_name = f"{model_name1}_{model_name2}"
+    
+    if lr_mult:
+        other = "_lrmult"
+        model_name += other
 
     channels = net_dic[net]
     num_age_prototypes = 5
@@ -106,8 +118,8 @@ def get_args(
     
     batch_size_pretrain = 12 #16 # 2
     batch_size = 12 #16 # 2
-    epochs_pretrain = 10 #10 # 1
-    epochs = 30 #60 # 2
+    epochs_pretrain = 3 # 10 #10 # 1
+    epochs = 10 # 30 #60 # 2
     optimizer = "Adam"
     lr = 0.05
     lr_age = 0.1
@@ -115,7 +127,7 @@ def get_args(
     lr_net = 0.0001 #0.0005
     weight_decay = 0.1 #0.0
     num_features = int(512/2) #0
-    freeze_epochs = 10 #10 # 1
+    freeze_epochs = 3 # 10 #10 # 1
     gamma = 0.1             # LR's decay factor
     step_size = 7           # LR's frequency decay
     num_workers = 8
@@ -169,6 +181,7 @@ def get_args(
     parser.add_argument('--balanced_modalities', default=balanced_modalities, help="If the modalitites are unbalanced and we want to balanced them.")
     parser.add_argument('--drop_out', default=drop_out, help="Dictionary with drop out probabilities.")
     parser.add_argument('--threshold', default=threshold, help="Dictionary/value with thresholds for inference.")
+    parser.add_argument('--lr_mult', type = dict, default = lr_mult, help = 'Dictionary with learning rate multipliers per modality.')
 
     args = parser.parse_args()
     
@@ -374,29 +387,38 @@ def get_optimizer_nn(
     random.seed(args.seed)
     np.random.seed(args.seed)
 
-    # create parameter groups
+    # create parameter groups (dessa returneras till main.py)
     params_to_freeze = []
     params_to_train = []
     params_backbone = []
     
-    # --- NY LOGIK: Loopa över ModuleDicts för backbones ---
-    # Eftersom net är DataParallel måste vi gå via net.module
+    # Initiera listan för nätverkets optimerargrupper
+    paramlist_net = [
+            {"params": params_backbone, "lr": args.lr_net, "weight_decay_rate": args.weight_decay},
+            {"params": params_to_freeze, "lr": args.lr_block, "weight_decay_rate": args.weight_decay}
+    ]
     
-    # Kontrollera om vi använder 'resnet' eller 'convnext' (din original-check)
+    # --- LOGIK: Loopa över ModuleDicts för backbones ---
     if 'resnet3D_18' in args.net or 'convnext3D_tiny' in args.net:
         print("Network is ", args.net, flush = True)
         
-        # Loopa igenom alla modaliteter (t.ex. 'mri', 'pet')
         for modality, backbone in net.module._backbones.items():
             print(f"Collecting parameters for backbone: {modality}", flush=True)
             
-            # Samla parametrar från varje backbone
+            mod_params = []
             for name, param in backbone.named_parameters():
-                params_to_train.append(param)
-                
-                # OBS: Om du vill ha specifik logik för att frysa delar av backbone
-                # (t.ex. första lagren), lägg till den logiken här.
-                # Just nu lägger din kod allt i 'params_to_train'.
+                mod_params.append(param)
+                params_to_train.append(param) # Spara för din main.py
+            
+            # Hämta multiplikatorn från args (default till 1.0 om den saknas)
+            mult = args.lr_mult.get(modality, 1.0) if hasattr(args, 'lr_mult') else 1.0
+            
+            # Lägg till som en separat optimerargrupp med anpassad LR
+            paramlist_net.append({
+                "params": mod_params, 
+                "lr": args.lr_block * mult, 
+                "weight_decay_rate": args.weight_decay
+            })
                 
     else:
         print("Network not implemented", flush = True)     
@@ -405,7 +427,6 @@ def get_optimizer_nn(
     classification_weight = []
     classification_bias = []
     
-    # Denna del är oförändrad eftersom classification layer är gemensamt
     for name, param in net.module._classification.named_parameters():
         if 'weight' in name:
             classification_weight.append(param)
@@ -415,48 +436,26 @@ def get_optimizer_nn(
             if args.bias:
                 classification_bias.append(param)
     
-    # --- NY LOGIK: Samla alla add-on parametrar ---
-    add_on_params = []
+    # --- LOGIK: Samla alla add-on parametrar med anpassad LR ---
     for modality, add_on_layer in net.module._add_ons.items():
-        add_on_params.extend(list(add_on_layer.parameters()))
-    
-    # --- PARAMETER LISTS ---
-    paramlist_net = [
-            {"params": params_backbone, 
-             "lr": args.lr_net, 
-             "weight_decay_rate": args.weight_decay},
-            {"params": params_to_freeze, 
-             "lr": args.lr_block, 
-             "weight_decay_rate": args.weight_decay},
-            {"params": params_to_train, 
-             "lr": args.lr_block, 
-             "weight_decay_rate": args.weight_decay},
-            # Här skickar vi in den samlade listan av alla add-ons
-            {"params": add_on_params, 
-             "lr": args.lr_block*10., 
-             "weight_decay_rate": args.weight_decay}]
+        mod_params = list(add_on_layer.parameters())
+        mult = args.lr_mult.get(modality, 1.0) if hasattr(args, 'lr_mult') else 1.0
+        
+        paramlist_net.append({
+            "params": mod_params, 
+            "lr": args.lr_block * 10. * mult, 
+            "weight_decay_rate": args.weight_decay
+        })
             
     paramlist_classifier = [
-            {"params": classification_weight, 
-             "lr": args.lr, 
-             "weight_decay_rate": args.weight_decay},
-            {"params": classification_bias, 
-             "lr": args.lr, 
-             "weight_decay_rate": 0},]
+            {"params": classification_weight, "lr": args.lr, "weight_decay_rate": args.weight_decay},
+            {"params": classification_bias, "lr": args.lr, "weight_decay_rate": 0},
+    ]
           
     if args.optimizer == 'Adam':
-        optimizer_net = torch.optim.AdamW(
-            paramlist_net,
-            lr = args.lr,
-            weight_decay = args.weight_decay)
-        optimizer_classifier = torch.optim.AdamW(
-            paramlist_classifier,
-            lr = args.lr,
-            weight_decay = args.weight_decay)
+        optimizer_net = torch.optim.AdamW(paramlist_net, lr=args.lr, weight_decay=args.weight_decay)
+        optimizer_classifier = torch.optim.AdamW(paramlist_classifier, lr=args.lr, weight_decay=args.weight_decay)
         
-        # Vi returnerar listorna. Eftersom vi appendade både MRI och PET till 
-        # 'params_to_train', kommer din main-loop automatiskt hantera frysning/
-        # upptining av båda nätverken när den itererar över denna lista.
         return optimizer_net, optimizer_classifier, params_to_freeze, params_to_train, params_backbone
     
     else:
