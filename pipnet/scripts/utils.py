@@ -70,7 +70,7 @@ def get_args(
     }
     balanced_modalities = False
     drop_out = {
-        "mri": 0.1
+        "mri": 0.6
     }
     #drop_out = None
 
@@ -88,8 +88,14 @@ def get_args(
     
     threshold = None
 
-    bal_text = "bal" if balanced_modalities else "unbal"
-    model_name = f"{model_name1}_{model_name2}_{bal_text}"
+    #bal_text = "bal" if balanced_modalities else "unbal"
+    #model_name = f"{model_name1}_{model_name2}_{bal_text}"
+
+    if len(modalities) > 1:
+        bal_text = "bal" if balanced_modalities else "unbal"
+        model_name = f"{model_name1}_{model_name2}_{bal_text}"
+    else:
+        model_name = f"{model_name1}_{model_name2}"
 
     channels = net_dic[net]
     num_age_prototypes = 5
