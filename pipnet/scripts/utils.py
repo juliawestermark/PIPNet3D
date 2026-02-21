@@ -69,11 +69,11 @@ def get_args(
         'amy': (160, 160, 96),  # TODO: Change values
     }
 
-    lr_mult = {
-        "mri": 0.01,
-        "amy": 1.0
-    }
-    #lr_mult = None
+    #lr_mult = {
+    #    "mri": 0.01,
+    #    "amy": 1.0
+    #}
+    lr_mult = None
     
     balanced_modalities = False
     #drop_out = {
@@ -83,23 +83,24 @@ def get_args(
 
     threshold = None
 
-    if len(modalities) > 1:
-        threshold = {
-            'mri': 0.1, 
-            'amy': 0.1 
-        }
-    elif "mri" in modalities:
-        threshold = 0.9
-    elif "amy" in modalities:
-        threshold = 0.9
+    # if len(modalities) > 1:
+    #     threshold = {
+    #         'mri': 0.99, 
+    #         'amy': 0.0001 
+    #     }
+    # elif "mri" in modalities:
+    #     threshold = 0.9
+    # elif "amy" in modalities:
+    #     threshold = 0.9
     
     threshold = None
 
     #bal_text = "bal" if balanced_modalities else "unbal"
     #model_name = f"{model_name1}_{model_name2}_{bal_text}"
     other = None
+    normal = True
 
-    if len(modalities) > 1:
+    if len(modalities) > 1 and not normal:
         bal_text = "bal" if balanced_modalities else "unbal"
         model_name = f"{model_name1}_{model_name2}_{bal_text}"
     else:
@@ -118,8 +119,8 @@ def get_args(
     
     batch_size_pretrain = 12 #16 # 2
     batch_size = 12 #16 # 2
-    epochs_pretrain = 3 # 10 #10 # 1
-    epochs = 10 # 30 #60 # 2
+    epochs_pretrain = 10 # 10 #10 # 1
+    epochs = 30 # 30 #60 # 2
     optimizer = "Adam"
     lr = 0.05
     lr_age = 0.1
@@ -127,7 +128,7 @@ def get_args(
     lr_net = 0.0001 #0.0005
     weight_decay = 0.1 #0.0
     num_features = int(512/2) #0
-    freeze_epochs = 3 # 10 #10 # 1
+    freeze_epochs = 10 # 3 # 10 #10 # 1
     gamma = 0.1             # LR's decay factor
     step_size = 7           # LR's frequency decay
     num_workers = 8
@@ -181,7 +182,7 @@ def get_args(
     parser.add_argument('--balanced_modalities', default=balanced_modalities, help="If the modalitites are unbalanced and we want to balanced them.")
     parser.add_argument('--drop_out', default=drop_out, help="Dictionary with drop out probabilities.")
     parser.add_argument('--threshold', default=threshold, help="Dictionary/value with thresholds for inference.")
-    parser.add_argument('--lr_mult', type = dict, default = lr_mult, help = 'Dictionary with learning rate multipliers per modality.')
+    # parser.add_argument('--lr_mult', type = dict, default = lr_mult, help = 'Dictionary with learning rate multipliers per modality.')
 
     args = parser.parse_args()
     

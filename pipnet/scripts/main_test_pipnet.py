@@ -66,7 +66,7 @@ test_projectloader = dataloaders[7]
 # -----------------------------------------------------------------------------
 # SNABB-TEST LÄGE: Klipp datasetet "In-Place" (Ingen Subset wrapper!)
 # -----------------------------------------------------------------------------
-DEBUG_SIZE = 20  # Sätt till None eller 0 för att köra allt
+DEBUG_SIZE = None  # Sätt till None eller 0 för att köra allt
 
 if DEBUG_SIZE:
     print(f"\n[DEBUG MODE ACTIVATED] Reducing datasets to {DEBUG_SIZE} samples (In-Place Slice).\n")
