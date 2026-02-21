@@ -10,6 +10,7 @@ import torch.nn.functional as F
 from tqdm.auto import tqdm
 import monai.transforms as transforms
 import re
+import textwrap
 
 from sklearn.metrics import accuracy_score
 from sklearn.metrics import roc_auc_score
@@ -393,17 +394,9 @@ def get_local_explanations(
                         h_idx = max_idx_h[w_idx].item()
                         d_idx = max_idx_hw[h_idx, w_idx].item()
                         
-                        # Ladda och cacha bild (här sker din crop/resize via Dataset egentligen om du använde dataset[k], 
-                        # men här laddar du manuellt. Det är OK om visualize_topk gör det rätt, men här nere 
-                        # måste vi se till att dimensionerna stämmer).
-                        
                         if target_mod not in cached_images:
-                            # Hämta tensorn direkt från input 'xs' istället för att ladda från disk!
-                            # 'xs' har redan passerat __getitem__ och har rätt storlek/crop.
                             if target_mod in xs:
                                 img_tensor = xs[target_mod].cpu()
-                                # Om (B, C, D, H, W) -> ta bort batch (C, D, H, W) -> unsqueeze sen (1, C, D, H, W)
-                                # Men oftast är xs[mod] (1, 1, D, H, W).
                                 cached_images[target_mod] = img_tensor
                             else:
                                 cached_images[target_mod] = None
@@ -411,28 +404,23 @@ def get_local_explanations(
                         img_tensor = cached_images[target_mod]
                         
                         if img_tensor is not None:
-                            # --- NYTT: RÄKNA UT PATCH STORLEK DYNAMISKT ---
-                            # img_tensor shape är typiskt (Batch, Channels, D, H, W)
                             current_shape = img_tensor.shape[-3:] # (D, H, W)
                             
                             patchsize, skip_z, skip_y, skip_x = get_patch_size_dynamic(current_shape, args)
                             
-                            # Använd de dynamiska värdena
                             ps_coord = get_img_coordinates(
-                                current_shape[0], current_shape[1], current_shape[2], # slices, rows, cols
+                                current_shape[0], current_shape[1], current_shape[2], 
                                 softmax_map.shape, 
                                 patchsize, skip_z, skip_y, skip_x,
                                 d_idx, h_idx, w_idx)
-                            # -----------------------------------------------
                             
                             local_explanation[p_idx_item] = (ps_coord, simweight)
                             
         local_explanations.append(local_explanation)
         
-        # --- PLOTTING LOGIK (Multimodal Sets) ---
+        # --- PLOTTING LOGIK (Sorterat per Sann Klass + Titel/Footer) ---
         if plot and len(local_explanation) > 0:
             
-            # Identifiera inblandade modaliteter
             contributing_modalities = set()
             for proto_idx in local_explanation.keys():
                 for mod, (start, end) in modality_offsets.items():
@@ -441,20 +429,25 @@ def get_local_explanations(
                         break
             
             if len(contributing_modalities) > 0:
-                # Skapa set-nyckel
-                combo_key = "_".join(sorted(list(contributing_modalities)))
+                true_idx = ys.item()
+                true_name = idx_to_class.get(true_idx, str(true_idx))
                 
-                if combo_key not in plots_count_combinations:
-                    plots_count_combinations[combo_key] = 0
+                pred_idx = ys_pred.item()
+                pred_name = idx_to_class.get(pred_idx, str(pred_idx))
+
+                combo_str = "_".join(sorted(list(contributing_modalities)))
+                plot_counter_key = f"{true_name}_{combo_str}"
                 
-                # Kolla kvot
-                if plots_count_combinations[combo_key] < plot_limit_per_modality:
-                    pred_idx = ys_pred.item()
-                    pred_name = idx_to_class.get(pred_idx, str(pred_idx))
-                    true_idx = ys.item()
-                    true_name = idx_to_class.get(true_idx, str(true_idx))
-                    
-                    title = f"Pred: {pred_name} | True: {true_name}\n Detected PS: {str(list(local_explanation.keys()))}"
+                if plot_counter_key not in plots_count_combinations:
+                    plots_count_combinations[plot_counter_key] = 0
+                
+                if plots_count_combinations[plot_counter_key] < plot_limit_per_modality:
+                    proto_list = sorted(list(local_explanation.keys()))
+                    proto_str = str(proto_list)
+                    wrapped_proto_str = textwrap.fill(proto_str, width=80, subsequent_indent=" "*13)
+
+                    main_title = f"True: {true_name} | Pred: {pred_name}"
+                    footer_text = f"Detected PS: {wrapped_proto_str}"
 
                     try:
                         img_str = str(img_name_ref)
@@ -463,17 +456,26 @@ def get_local_explanations(
                         base_name = os.path.basename(img_str)
                         exam, _ = os.path.splitext(base_name)
 
-                        ps_name = f"local_expl_{combo_key}_{subj}_{exam}_idx{k}"
-                        plot_name = os.path.join(plot_dir, ps_name + ".png")
+                        # Skapa klass-mapp (T.ex. True_AD)
+                        class_plot_dir = os.path.join(plot_dir, f"True_{true_name}")
+                        if not os.path.exists(class_plot_dir):
+                            os.makedirs(class_plot_dir)
+
+                        ps_name = f"local_expl_{true_name}_{combo_str}_{subj}_{exam}_idx{k}"
+                        plot_name = os.path.join(class_plot_dir, ps_name + ".png")
                         
-                        xs_cpu = {k: v.cpu() for k, v in xs.items()}
+                        xs_cpu = {key: val.cpu() for key, val in xs.items()}
                         
-                        # Notera: plot_local_explanation behöver också hantera olika storlekar internt,
-                        # men den använder 'modality_offsets' och 'local_explanation' som nu har korrekta
-                        # koordinater tack vare fixen ovan.
-                        plot_local_explanation(xs_cpu, local_explanation, modality_offsets, title=title, save_path=plot_name)
+                        plot_local_explanation(
+                            xs_cpu, 
+                            local_explanation, 
+                            modality_offsets, 
+                            title=main_title, 
+                            footer=footer_text, 
+                            save_path=plot_name
+                        )
                         
-                        plots_count_combinations[combo_key] += 1
+                        plots_count_combinations[plot_counter_key] += 1
 
                     except Exception as e:
                         print(f"[WARN] Could not plot explanation: {e}")

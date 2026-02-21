@@ -86,7 +86,7 @@ def plot_3d_slices(data, num_columns=10, cmap="gray", title=False, data_min=Fals
     plt.close(f)
     
 
-def plot_rgb_slices(data, num_columns=10, title=False, save_path=False, bottom=False, legend=False):
+def plot_rgb_slices(data, num_columns=10, title=False, footer=False, save_path=False, bottom=False, legend=False):
     """
     Plot all the slices of a 3D volume (both gray-scale or RGB) stored in a 
     numpy array.
@@ -133,16 +133,24 @@ def plot_rgb_slices(data, num_columns=10, title=False, save_path=False, bottom=F
                 img = axarr[j].imshow(data[i][j], vmin=0., vmax=1.)
                 axarr[j].axis("off")
 
+    # if footer:
+    #     plt.subplots_adjust(wspace=0, hspace=0, left=0, right=0.9, bottom=0, top=0.9)
+    # else:
     plt.subplots_adjust(wspace=0, hspace=0, left=0, right = 0.9, bottom=0, top=0.9)
-    
+
     if title:
         if bottom:
             f.suptitle(title, fontsize="large", y=0., va="top", color="gray")
         else:
-            f.suptitle(title)
+            f.suptitle(title, fontsize="large", y=0.98)
+            # f.suptitle(title)
+    
+    if footer:
+        # f.text(0.5, 0.02, footer, ha='center', va='bottom', fontsize="medium")
+        f.text(0.45, -0.05, footer, ha='center', va='top', fontsize="medium")
             
     if save_path:
-        f.savefig(save_path, bbox_inches='tight')
+        f.savefig(save_path, bbox_inches='tight', pad_inches=0.1)
         
     plt.show()
     plt.close(f)

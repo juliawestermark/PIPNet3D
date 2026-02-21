@@ -324,7 +324,7 @@ def visualize_topk(net, projectloader, num_classes, device, foldername, args, sa
     return topks, dict(), dict()
     
 
-def plot_local_explanation(xs, local_explanation, modality_offsets, title="", save_path=None):
+def plot_local_explanation(xs, local_explanation, modality_offsets, title="", footer="", save_path=None):
     if not isinstance(xs, dict):
         print("[WARN] plot_local_explanation received non-dict xs.")
         return
@@ -371,6 +371,13 @@ def plot_local_explanation(xs, local_explanation, modality_offsets, title="", sa
             base, ext = os.path.splitext(save_path)
             mod_save_path = f"{base}_{mod}{ext}"
             try:
-                plot_rgb_slices(img_tensor[0].numpy(), title=f"{title} \n({mod})", legend=ps_scores, save_path=mod_save_path)
+                # plot_rgb_slices(img_tensor[0].numpy(), title=f"{title} \n({mod})", legend=ps_scores, save_path=mod_save_path)
+                plot_rgb_slices(
+                    img_tensor[0].numpy(), 
+                    title=f"{title} ({mod})",
+                    footer=footer,
+                    legend=ps_scores, 
+                    save_path=mod_save_path
+                )
             except Exception as e:
                 print(f"Error plotting local expl {mod_save_path}: {e}")
