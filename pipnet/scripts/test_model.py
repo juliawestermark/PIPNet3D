@@ -56,6 +56,7 @@ def eval_pipnet(
     y_trues = []
     y_preds = []
     y_preds_classes = []
+    y_probs_all = []
     abstained = 0
     
     # --- FÖRBEREDELSE FÖR JÄMFÖRBARHET ---
@@ -85,6 +86,10 @@ def eval_pipnet(
             
             # 1. Hämta prediktioner
             max_out_score, ys_pred = torch.max(out, dim=1)
+            
+            probs = F.softmax(out, dim=1) 
+            y_probs_all.extend(probs.detach().cpu().numpy())
+
             ys_pred_scores = torch.amax(F.softmax((torch.log1p(out**net.module._classification.normalization_multiplier)), dim = 1), dim = 1) 
             abstained += (max_out_score.shape[0] - torch.count_nonzero(max_out_score))  
 
@@ -202,7 +207,37 @@ def eval_pipnet(
     info['local_size_all_classes'] = local_size_total/len(test_loader.dataset)
     info['local_size_sum_of_mod'] = local_size_total_sum_of_mod/len(test_loader.dataset)
     info['almost_nonzeros'] = global_anz/len(test_loader.dataset) # OBS: Detta är RAW detections (utan vikt-filter)
-    
+
+    try:
+        y_probs_np = np.array(y_probs_all)
+        
+        if net.module._num_classes == 2:
+            # Binärt
+            auc_val = roc_auc_score(y_trues, y_probs_np[:, 1])
+            info["auc_macro"] = auc_val
+            info["auc_class_1"] = auc_val
+        else:
+            # Multiclass (3+ klasser)
+            
+            # NYTT: Vi berättar uttryckligen för sklearn vilka klasser som finns [0, 1, 2]
+            all_classes = list(range(net.module._num_classes))
+            
+            # 1. Klass-specifik AUC
+            auc_classes = roc_auc_score(y_trues, y_probs_np, multi_class='ovr', average=None, labels=all_classes)
+            
+            for c, auc_c in enumerate(auc_classes):
+                info[f"auc_class_{c}"] = auc_c
+                
+            # 2. Macro (Ovikted genomsnitt)
+            info["auc_macro"] = np.mean(auc_classes)
+            
+            # 3. Weighted 
+            info["auc_weighted"] = roc_auc_score(y_trues, y_probs_np, multi_class='ovr', average='weighted', labels=all_classes)
+            
+    except Exception as e:
+        print(f"[WARN] Kunde inte beräkna AUC: {e}")
+        info["auc_macro"] = 0.0
+
     f1_avg = 'binary' if net.module._num_classes == 2 else 'macro'
     info["f1"] = f1_score(y_trues, y_preds_classes, average=f1_avg)
     

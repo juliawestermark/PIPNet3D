@@ -95,6 +95,8 @@ def get_args(
     
     threshold = None
 
+    prune_k_checks = 5
+
     #bal_text = "bal" if balanced_modalities else "unbal"
     #model_name = f"{model_name1}_{model_name2}_{bal_text}"
     other = None
@@ -115,6 +117,8 @@ def get_args(
     num_classes = len(dic_classes)
     out_shape = num_classes
     task_performed_name = f"{task_performed}_{model_name}"
+    if prune_k_checks:
+        task_performed_name += f"_prune{prune_k_checks}"
     experiment_folder = os.path.join(root_folder, "results", task_performed_name, net, "fold_" + str(current_fold))
     
     batch_size_pretrain = 12 #16 # 2
@@ -182,6 +186,7 @@ def get_args(
     parser.add_argument('--balanced_modalities', default=balanced_modalities, help="If the modalitites are unbalanced and we want to balanced them.")
     parser.add_argument('--drop_out', default=drop_out, help="Dictionary with drop out probabilities.")
     parser.add_argument('--threshold', default=threshold, help="Dictionary/value with thresholds for inference.")
+    parser.add_argument('--prune_k_checks', default=prune_k_checks, help="The number of images to check while removing empty prototypes.")
     # parser.add_argument('--lr_mult', type = dict, default = lr_mult, help = 'Dictionary with learning rate multipliers per modality.')
 
     args = parser.parse_args()

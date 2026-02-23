@@ -16,6 +16,9 @@ import torch
 from copy import deepcopy
 from datetime import datetime
 
+import torch.nn.functional as F
+from tqdm import tqdm
+
 from utils import get_args
 from make_dataset import get_dataloaders
 from model_builder import load_trained_pipnet
@@ -27,6 +30,7 @@ from test_model import eval_local_explanations
 from test_model import check_empty_prototypes
 from vis_pipnet import visualize_topk
 from plot_utils import plot_proto_distribution_dynamic
+from vis_pipnet import plot_local_explanation
 
 
 
@@ -352,61 +356,122 @@ topks, img_prototype, proto_coord = visualize_topk(
     threshold=args.threshold
     )
 
-print("\n--- DIAGNOS: Analys av Prototyp-poäng ---", flush=True)
+if args.prune_k_checks:
+    print("\n--- ROBUST SPATIAL PRUNING: Top-K (Kräver 0 träffar för radering) ---", flush=True)
 
-# 1. Samla alla max-poäng per modalitet
-max_scores_per_modality = {m: [] for m in modality_indices.keys()}
-zero_prototypes_count = {m: 0 for m in modality_indices.keys()}
+    K_TO_CHECK = args.prune_k_checks            
+    INTENSITY_THRESHOLD = 0.05 
 
-# topks är en dict: {proto_index: [(img_idx, score), ...]}
-# Vi vill veta: Vad är den HÖGSTA poängen varje prototyp någonsin fick?
-for proto_idx in range(pipnet.module._classification.weight.shape[1]):
-    
-    # Hitta vilken modalitet prototypen tillhör
-    current_mod = None
-    for mod, (start, end) in modality_indices.items():
-        if start <= proto_idx < end:
-            current_mod = mod
-            break
+    latent_shape = (args.dshape, args.hshape, args.wshape)
+    spatial_zeros = []
+    pruned_explanations = {}
+
+    pipnet.eval()
+    with torch.no_grad():
+        
+        pbar = tqdm(topks.items(), desc="Pruning Protos", mininterval=2.0, ascii=True)
+        
+        for prot_idx, img_list in pbar:
+            mod_key = None
+            local_prot_idx = 0
+            for mod, (start, end) in modality_indices.items():
+                if start <= prot_idx < end:
+                    mod_key = mod
+                    local_prot_idx = prot_idx - start 
+                    break
+                    
+            if mod_key is None: continue 
+                
+            brain_hits = 0
+            images_checked = 0
+            best_d, best_h, best_w = 0, 0, 0
             
-    if current_mod is None: continue # Borde inte hända
+            for (img_idx, score) in img_list[:K_TO_CHECK]:
+                xs, _, _ = projectloader.dataset[img_idx]
+                input_dict = {k: v.unsqueeze(0).to(device) for k, v in xs.items()}
+                img_tensor = input_dict[mod_key] 
+                
+                threshold_val = img_tensor.max() * INTENSITY_THRESHOLD
+                brain_mask = (img_tensor > threshold_val).float()
+                pooled_mask = F.adaptive_max_pool3d(brain_mask, output_size=latent_shape)
+                pooled_mask_bool = pooled_mask[0, 0] > 0 
+                
+                proto_features_dict, _, _ = pipnet(input_dict)
+                feature_map = proto_features_dict[mod_key][0, local_prot_idx]
+                
+                flat_idx = torch.argmax(feature_map)
+                d, h, w = np.unravel_index(flat_idx.cpu().numpy(), latent_shape)
+                
+                if pooled_mask_bool[d, h, w]:
+                    brain_hits += 1
+                    
+                if images_checked == 0:
+                    best_d, best_h, best_w = d, h, w
+                    img_shape = img_tensor.shape[2:] # (D, H, W)
+                    
+                images_checked += 1
 
-    # Hämta poängen från topks (om den finns)
-    if proto_idx in topks and len(topks[proto_idx]) > 0:
-        # topks[proto_idx] är en lista av tuples. Vi tar max score från den listan.
-        # Format: [(img_idx, score), (img_idx, score)...]
-        max_score = max([score for (_, score) in topks[proto_idx]])
-        max_scores_per_modality[current_mod].append(max_score)
+                if brain_hits > 0:
+                    break
+            
+            # --- ÄNDRING 1: Endast noll träffar raderas! ---
+            if brain_hits == 0 and images_checked > 0:
+                pipnet.module._classification.weight[:, prot_idx] = 0.0
+                spatial_zeros.append(prot_idx)
+                
+                stride_d = img_shape[0] // latent_shape[0]
+                stride_h = img_shape[1] // latent_shape[1]
+                stride_w = img_shape[2] // latent_shape[2]
+                
+                d_min = best_d * stride_d
+                d_max = min((best_d + 1) * stride_d, img_shape[0])
+                
+                h_min = best_h * stride_h
+                h_max = min((best_h + 1) * stride_h, img_shape[1])
+                
+                w_min = best_w * stride_w
+                w_max = min((best_w + 1) * stride_w, img_shape[2])
+                
+                ps_coord = (d_min, d_max, h_min, h_max, w_min, w_max)
+                fake_score = float(brain_hits) 
+                
+                pruned_explanations[prot_idx] = (ps_coord, fake_score)
+
+            pbar.set_postfix({'Pruned': len(spatial_zeros)})
+
+    print(f"\n[INFO] Rensade {len(spatial_zeros)} prototyper (som hade 0 träffar i hjärnan på {K_TO_CHECK} försök).")
+
+    if len(pruned_explanations) > 0:
+        print("[INFO] Skapar samlingsbild för prunade prototyper...")
         
-        # Kolla om den är "död"
-        if max_score < 0.001:
-            zero_prototypes_count[current_mod] += 1
-    else:
-        # Prototypen hittades aldrig i visualize_topk
-        max_scores_per_modality[current_mod].append(0.0)
-        zero_prototypes_count[current_mod] += 1
-
-# 2. Skriv ut statistik
-for mod in modality_indices.keys():
-    scores = np.array(max_scores_per_modality[mod])
-    
-    print(f"\nModalitet: {mod.upper()}")
-    print(f"  Antal prototyper totalt: {len(scores)}")
-    print(f"  Antal 'döda' (< 0.001):   {zero_prototypes_count[mod]}")
-    
-    if len(scores) > 0:
-        print(f"  Max score (någonsin):    {scores.max():.4f}")
-        print(f"  Medel av max-scores:     {scores.mean():.4f}")
-        print(f"  Median av max-scores:    {np.median(scores):.4f}")
-        print(f"  90:e percentilen:        {np.percentile(scores, 90):.4f}")
+        # --- ÄNDRING 2: Bygg en garanterat komplett referensbild ---
+        print("[INFO] Letar upp giltiga bakgrundsbilder för plottning...")
+        xs_ref_perfect = {}
+        mods_needed = list(modality_indices.keys())
         
-        # Föreslå en threshold
-        suggestion = np.percentile(scores, 75) # Ta en nivå där de bästa 25% syns
-        print(f"  -> FÖRESLAGEN THRESHOLD: {suggestion:.4f} (eller lägre)")
-    else:
-        print("  [VARNING] Inga poäng registrerade alls.")
+        for xs_batch, ms_batch, _ in projectloader:
+            for mod in mods_needed:
+                if mod not in xs_ref_perfect:
+                    if ms_batch[mod][0].item() == 1.0:
+                        xs_ref_perfect[mod] = xs_batch[mod].clone()
+            
+            # Avbryt loopen så fort vi har samlat ihop minst en bra bild per modalitet!
+            if len(xs_ref_perfect) == len(mods_needed):
+                break
+        
+        pruned_save_path = os.path.join(args.log_dir, f"pruned_prototypes_fold{current_fold}.png")
+        
+        plot_local_explanation(
+            xs=xs_ref_perfect, 
+            local_explanation=pruned_explanations, 
+            modality_offsets=modality_indices, 
+            title="Pruned Prototypes (100% Outside Brain)", 
+            footer=f"K={K_TO_CHECK} (Zero brain hits)", 
+            save_path=pruned_save_path
+        )
+        print(f"[INFO] Samlingsbild sparad till: {pruned_save_path}")
 
-print("-------------------------------------------", flush=True)
+    print("---------------------------------------------------------------", flush=True)
 
 # set weights of prototypes that are never really found in projection set to 0
 set_to_zero = []
