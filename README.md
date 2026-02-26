@@ -1,32 +1,39 @@
-# PIPNet3D
-PiPNet3D: Patch-Based Intuitive Prototypes for Interpretable 3D Images Classification
+# Multi‑modal Alzheimer’s Prediction with Explainable AI
 
-We present PIPNet3D, a part-prototype neural network for volumetric images. 
-
-We applied PIPNet3D to the binary classification of Alzheimer's Disease from 3D structural Magnetic Resonance Imaging (sMRI, T1-MRI). 
-
-We assess the quality of prototypes under a systematic evaluation framework, propose new functionally grounded metrics to evaluate brain prototypes and develop an evaluation scheme to assess their coherency with domain experts.
-
-Classes (clinical cognitive decline level):
-
-- Cognitively Normal (CN)
-- Alzheimer's Disease (AD)
+This repository is a fork of the original [PIPNet3D](https://github.com/desantilisa/PIPNet3D), adopted for a Master's Thesis project focusing on multi-modal 3D imaging and multi-class classification of Alzheimer's Disease.
 
 
-**arXiv preprint**: [_"PIPNet3D: Interpretable Detection of Alzheimer in MRI Scans"_](https://arxiv.org/abs/2403.18328)
+## mmPIPNet
+We present mmPIPNet: Multi-modal Patch-Based Intuitive Prototypes for Interpretable 3D Images Classification.
 
-Accepted at the [iMIMIC](https://imimic-workshop.com) workshop during the [MICCAI-2024](https://conferences.miccai.org/2024/en/) event.
+### Features
+- Multi-modal Support: Integrates $n$ number of imaging modalities (e.g., MRI and Amyloid PET) as input.
+- Multi-class Classification: Support both binary and multi-class classification.
+- Generalized Pipeline: Automated adaption of the network architecture based on your dataset configurations.
 
-![Overview of PIPNet](https://github.com/desantilisa/PIPNet3D/blob/main/pip3d-overview_v2.png)   
+### Architecture
+![mmPIPNetArchitecture](mmpipnet-arkitektur.png)
 
-Images and labels (cognitive decline level) were collected from the Alzheimer's Disease Neuroimaging Initiative (ADNI) https://adni.loni.usc.edu (data publicity available under request) and preprocessed using data_preprocessing.py functions.
 
-Brain atlas (CerebrA) downloaded from https://nist.mni.mcgill.ca/cerebra/.
+## Quick Start Guide
+The workflow is divided into four main steps: data conversion, dataset assembly, running the generalized training script, and running the generalized test script.
 
-Codes adapted from the original [PIPNet](https://github.com/M-Nauta/PIPNet/tree/main)
+### 1. Preprocessing: Convert Images to Numpy
+Before training, convert your medical images (e.g., `.nii.gz`) to NumPy format for efficient loading. This needs to be customized to your data.
 
-Training a PIPNet: main_train_pipnet.py
+### 2. Build your Dataset
+The dataset is build in `make_mm_dataset.py`. This script generates the necessary dataframe for the training and testing pipline. It needs to be adjusted to your dataset and its file structure.
 
-Test a trained PIPNet: main_test_pipnet.py
+### 3. Training
+The `main_train_pipnet.py` automatically configures the model's input and output based on your arguments, which can be set in `utils.py` (the command line is ok but the naming of the model and runs would be wrong).
 
-Link to the weights of trained PIPNet(s) available in "models" folder.
+### 4. Testing and Evaluation
+Evaluate your trained model and visualize the learned prototypes using `main_test_pipnet.py`.
+
+
+## Data Sources
+Images and clinical stages were collected from the Alzheimer's Disease Neuroimaging Initiative (ADNI) [adni.loni.usc.edu](https://adni.loni.usc.edu).
+
+
+## Acknowledgments
+Codes adapted from [PIPNet3D](https://github.com/desantilisa/PIPNet3D) and [PIPNet](https://github.com/M-Nauta/PIPNet).
