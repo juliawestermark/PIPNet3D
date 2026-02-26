@@ -37,10 +37,10 @@ def get_args(
     #modalities = ['amy']
     modalities = ['mri', 'amy']
 
-    #root_folder = "/home/maia-user/PIPNet3D/"
-    root_folder = "/proj/berzbiomedicalimagingkth/users/x_julwe/PIPNet3D/"
-    #dataset_path = "/home/maia-user/ADNI_npy"
-    dataset_path = "/proj/berzbiomedicalimagingkth/users/x_julwe/ADNI_npy"
+    root_folder = "/home/maia-user/PIPNet3D/"
+    #root_folder = "/proj/berzbiomedicalimagingkth/users/x_julwe/PIPNet3D/"
+    dataset_path = "/home/maia-user/ADNI_npy"
+    #dataset_path = "/proj/berzbiomedicalimagingkth/users/x_julwe/ADNI_npy"
     
     metadata_path = root_folder
     model_path = os.path.join(root_folder, "pipnet", "models")
@@ -51,12 +51,12 @@ def get_args(
     global_mask_paths = {}
     
     # for mod in modalities:
-    #     # Bygg sökvägen automatiskt
+    #     # Build the path automatically
     #     mask_path = os.path.join(dataset_path, "masks", mod, "global_mask.npy")
-    #     # Spara i dicten
+    #     # Save in the dictionary
     #     global_mask_paths[mod] = mask_path
-    n_fold = 5           # Number of fold
-    test_split = 0.2
+    n_fold = 3           # Number of folds
+    test_split = 0.3
     seed = 42            # seed for reproducible shuffling
     
     downscaling = 2
@@ -121,10 +121,10 @@ def get_args(
         task_performed_name += f"_prune{prune_k_checks}"
     experiment_folder = os.path.join(root_folder, "results", task_performed_name, net, "fold_" + str(current_fold))
     
-    batch_size_pretrain = 12 #16 # 2
-    batch_size = 12 #16 # 2
-    epochs_pretrain = 10 # 10 #10 # 1
-    epochs = 30 # 30 #60 # 2
+    batch_size_pretrain = 2 #16 # 2
+    batch_size = 2 #16 # 2
+    epochs_pretrain = 1 # 10 #10 # 1
+    epochs = 2 # 30 #60 # 2
     optimizer = "Adam"
     lr = 0.05
     lr_age = 0.1
@@ -132,7 +132,7 @@ def get_args(
     lr_net = 0.0001 #0.0005
     weight_decay = 0.1 #0.0
     num_features = int(512/2) #0
-    freeze_epochs = 10 # 3 # 10 #10 # 1
+    freeze_epochs = 1 # 3 # 10 #10 # 1
     gamma = 0.1             # LR's decay factor
     step_size = 7           # LR's frequency decay
     num_workers = 8
@@ -324,8 +324,8 @@ def set_seeds(seed: int=42):
     torch.manual_seed(seed)
     # Set the seed for CUDA torch operations (ones that happen on the GPU)
     torch.cuda.manual_seed(seed)
-    
-    
+
+
 def set_device(args:argparse.Namespace):
     
     gpu_list = torch.cuda # args.gpu_ids.split(',')
@@ -381,7 +381,7 @@ def init_weights_xavier(m):
         torch.nn.init.xavier_uniform_(
             m.weight, 
             gain = torch.nn.init.calculate_gain('sigmoid'))
-  
+
 
 def get_optimizer_nn(
         net, 
@@ -393,18 +393,18 @@ def get_optimizer_nn(
     random.seed(args.seed)
     np.random.seed(args.seed)
 
-    # create parameter groups (dessa returneras till main.py)
+    # create parameter groups (these are returned to main.py)
     params_to_freeze = []
     params_to_train = []
     params_backbone = []
     
-    # Initiera listan för nätverkets optimerargrupper
+    # Initialize the list for the network's optimizer groups
     paramlist_net = [
             {"params": params_backbone, "lr": args.lr_net, "weight_decay_rate": args.weight_decay},
             {"params": params_to_freeze, "lr": args.lr_block, "weight_decay_rate": args.weight_decay}
     ]
     
-    # --- LOGIK: Loopa över ModuleDicts för backbones ---
+    # --- LOGIC: Loop over ModuleDicts for backbones ---
     if 'resnet3D_18' in args.net or 'convnext3D_tiny' in args.net:
         print("Network is ", args.net, flush = True)
         
@@ -414,12 +414,12 @@ def get_optimizer_nn(
             mod_params = []
             for name, param in backbone.named_parameters():
                 mod_params.append(param)
-                params_to_train.append(param) # Spara för din main.py
+                params_to_train.append(param) # Save for your main.py
             
-            # Hämta multiplikatorn från args (default till 1.0 om den saknas)
+            # Get the multiplier from args (default to 1.0 if missing)
             mult = args.lr_mult.get(modality, 1.0) if hasattr(args, 'lr_mult') else 1.0
             
-            # Lägg till som en separat optimerargrupp med anpassad LR
+            # Add as a separate optimizer group with customized LR
             paramlist_net.append({
                 "params": mod_params, 
                 "lr": args.lr_block * mult, 
@@ -429,7 +429,7 @@ def get_optimizer_nn(
     else:
         print("Network not implemented", flush = True)     
     
-    # --- CLASSIFICATION LAYER (Gemensam) ---
+    # --- CLASSIFICATION LAYER (Shared) ---
     classification_weight = []
     classification_bias = []
     
@@ -442,7 +442,7 @@ def get_optimizer_nn(
             if args.bias:
                 classification_bias.append(param)
     
-    # --- LOGIK: Samla alla add-on parametrar med anpassad LR ---
+    # --- LOGIC: Collect all add-on parameters with customized LR ---
     for modality, add_on_layer in net.module._add_ons.items():
         mod_params = list(add_on_layer.parameters())
         mult = args.lr_mult.get(modality, 1.0) if hasattr(args, 'lr_mult') else 1.0
@@ -466,7 +466,7 @@ def get_optimizer_nn(
     
     else:
         raise ValueError("this optimizer type is not implemented")
-        
+
 
 def topk_accuracy(output, target, topk=[1,]):
     

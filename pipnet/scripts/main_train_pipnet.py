@@ -17,7 +17,7 @@ import torch
 import torch.nn as nn
 from datetime import datetime
 
-# Egna moduler
+# Custom modules
 from utils import set_device, get_optimizer_nn, init_weights_xavier, get_args, Log
 from plot_utils import plot_3d_slices
 from make_dataset import get_dataloaders
@@ -46,7 +46,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 #%% Get Dataloaders
 print("Start time:", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
-# Dataloaders returnerar nu (inputs_dict, masks_dict, labels)
+# Dataloaders now return (inputs_dict, masks_dict, labels)
 dataloaders = get_dataloaders(args)
 trainloader = dataloaders[0]
 trainloader_pretraining = dataloaders[1]
@@ -68,11 +68,11 @@ print(f"Sample loaded. Keys: {sample_inputs.keys()}", flush=True)
 if not os.path.isdir(args.log_dir):
     os.mkdir(args.log_dir)
 
-# 2. Bygg hela sökvägen till mappen
-# Struktur: args.model_path / binary / amy_mri / resnet3D_18_kin400
+# 2. Build the full path to the directory
+# Structure: args.model_path / binary / amy_mri / resnet3D_18_kin400
 model_save_dir = os.path.join(args.model_path, 'binary', args.model_name, net_type)
 
-# 3. Skapa mappen om den inte redan finns (VIKTIGT!)
+# 3. Create the directory if it doesn't already exist (IMPORTANT!)
 if not os.path.exists(model_save_dir):
     os.makedirs(model_save_dir, exist_ok=True)
     print(f"[INFO] Created model directory: {model_save_dir}")
@@ -84,22 +84,22 @@ device, device_ids = set_device(args)
 # Masks
 global_masks = {}
 
-# Loopa över nyckel (t.ex. 'mri', 'amy') och sökväg
+# Loop over key (e.g., 'mri', 'amy') and path
 for modality, path in args.global_mask_paths.items():
     
-    # Default till None om laddning misslyckas eller path saknas
+    # Default to None if loading fails or path is missing
     global_masks[modality] = None
     
     if path and os.path.exists(path):
         print(f"Loading global {modality.upper()} mask from {path}...", flush=True)
         try:
-            # 1. Ladda numpy array
+            # 1. Load numpy array
             mask_arr = np.load(path).astype(np.float32)
             
-            # 2. Konvertera till Tensor och flytta till GPU
+            # 2. Convert to Tensor and move to GPU
             mask_tensor = torch.from_numpy(mask_arr).float().to(device)
             
-            # 3. Se till att shape är (1, D, H, W) för broadcasting
+            # 3. Ensure shape is (1, D, H, W) for broadcasting
             if mask_tensor.ndim == 3:
                 mask_tensor = mask_tensor.unsqueeze(0)
             
@@ -108,7 +108,7 @@ for modality, path in args.global_mask_paths.items():
         except Exception as e:
             print(f"ERROR loading {modality} mask from {path}: {e}", flush=True)
     else:
-        # Om path är None eller filen inte finns
+        # If path is None or file does not exist
         if path:
             print(f"WARNING: Path provided for {modality} but file not found: {path}", flush=True)
         else:
@@ -118,9 +118,9 @@ for modality, path in args.global_mask_paths.items():
 
 print(f"Active global masks: {list(global_masks.keys())}", flush=True)
 
-#%% Initiera Multimodal Modell
+#%% Initialize Multimodal Model
 
-# get_network returnerar nu dictionaries för backbones och add-ons
+# get_network now returns dictionaries for backbones and add-ons
 (backbones, add_ons, pool_layer, classification_layer, num_prototypes) = get_network(args.out_shape, args)
 
 net = PIPNet(
@@ -146,7 +146,7 @@ params_backbone = optimizer[4]
 with torch.no_grad():
     
     if args.state_dict_dir_net != '':
-        # Load checkpoint logic (kan behöva anpassas om nyckel-namnen ändrats i state_dict)
+        # Load checkpoint logic (might need adjustment if key names changed in state_dict)
         checkpoint = torch.load(args.state_dict_dir_net, map_location = device)
         net.load_state_dict(checkpoint['model_state_dict'], strict = True) 
         print("Pretrained network loaded", flush = True)
@@ -169,7 +169,7 @@ with torch.no_grad():
                 optimizer_classifier.load_state_dict(checkpoint['optimizer_classifier_state_dict'])
         
     else:
-        # Initiera add-ons för alla modaliteter
+        # Initialize add-ons for all modalities
         for mod in net.module._add_ons.keys():
             net.module._add_ons[mod].apply(init_weights_xavier)
             
@@ -205,7 +205,7 @@ for mod in modalities:
     modality_offsets[mod] = (current_offset, current_offset + num_protos)
     current_offset += num_protos
 
-print(f"\n[INFO] Modality offsets fördelade: {modality_offsets}", flush=True)
+print(f"\n[INFO] Modality offsets distributed: {modality_offsets}", flush=True)
 # ------------------------------
 
 # Loss & Scheduler
@@ -218,17 +218,17 @@ scheduler_net = torch.optim.lr_scheduler.CosineAnnealingLR(
     last_epoch=-1)
 
 # --- Output Shape Check ---
-# Vi kör en batch genom nätet för att se dimensionerna
+# Run a batch through the network to check dimensions
 with torch.no_grad():
-    # Packa upp dict och flytta till device
+    # Unpack dict and move to device
     xs1, xs2, ms1, _ = next(iter(trainloader))
     for k in xs1: xs1[k] = xs1[k].to(device)
     for k in ms1: ms1[k] = ms1[k].to(device)
 
     proto_out, _, _ = net(xs1, masks=ms1)
     
-    # Kolla shape på första modaliteten (t.ex. mri) för loggning
-    # proto_out är en dict {'mri': tensor, 'pet': tensor}
+    # Check shape of the first modality (e.g., mri) for logging
+    # proto_out is a dict {'mri': tensor, 'pet': tensor}
     first_feat = list(proto_out.values())[0]
     wshape = first_feat.shape[-1]
     hshape = first_feat.shape[-2]
@@ -254,8 +254,8 @@ print("Training start time:", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 #%% PHASE (1): Pretraining Prototypes
 for epoch in range(1, args.epochs_pretrain+1):
     
-    # --- UPPDATERAD FREEZING LOGIC FÖR MULTIMODAL ---
-    # Vi måste loopa över dictionaries nu
+    # --- UPDATED FREEZING LOGIC FOR MULTIMODAL ---
+    # We must loop over dictionaries now
     
     for param in params_to_train: param.requires_grad = True
     
@@ -307,7 +307,7 @@ if args.state_dict_dir_net == '':
 optimizer = get_optimizer_nn(net, args)
 optimizer_net = optimizer[0]
 optimizer_classifier = optimizer[1] 
-# Note: params listorna måste vara uppdaterade för dicts (antas funka via rekursion i get_optimizer_nn)
+# Note: params lists must be updated for dicts (assumed to work via recursion in get_optimizer_nn)
         
 scheduler_net = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer_net, T_max = len(trainloader)*args.epochs, eta_min = args.lr_net/100.)
 
@@ -316,7 +316,7 @@ if args.epochs <= 30:
 else:
     scheduler_classifier = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer_classifier, T_0 = 10, eta_min = 0.001, T_mult = 1)
         
-# Grundinställning: Frys allt utom classifier
+# Default setting: Freeze everything except classifier
 for param in net.module.parameters(): param.requires_grad = False
 for param in net.module._classification.parameters(): param.requires_grad = True
 
@@ -329,10 +329,10 @@ for epoch in range(1, args.epochs + 1):
                  
     epochs_to_finetune = 3 
     
-    # --- LOGIK FÖR FINETUNING / UNFREEZING ---
+    # --- LOGIC FOR FINETUNING / UNFREEZING ---
     if epoch <= epochs_to_finetune and (args.epochs_pretrain > 0 or args.state_dict_dir_net != ''):
         finetune = True
-        # Frys allt utom classifier
+        # Freeze everything except classifier
         for mod in net.module._add_ons.keys():
             for param in net.module._add_ons[mod].parameters(): param.requires_grad = False
             for param in net.module._backbones[mod].parameters(): param.requires_grad = False # Explicit safety
@@ -344,11 +344,11 @@ for epoch in range(1, args.epochs + 1):
             if epoch > (args.freeze_epochs):
                 for mod in net.module._backbones.keys():
                     for param in net.module._add_ons[mod].parameters(): param.requires_grad = True
-                    # Här antar vi att params_to_freeze / params_backbone pekar på rätt parametrar
-                    # Om inte, loopa explicit:
+                    # Here we assume params_to_freeze / params_backbone point to the correct parameters
+                    # If not, loop explicitly:
                     for param in net.module._backbones[mod].parameters(): param.requires_grad = True
                 
-                # Generella listor från optimizer-helpern
+                # General lists from the optimizer helper
                 for param in params_to_freeze: param.requires_grad = True
                 for param in params_to_train: param.requires_grad = True
                 for param in params_backbone: param.requires_grad = True   
@@ -364,7 +364,7 @@ for epoch in range(1, args.epochs + 1):
     
     print("\n Epoch", epoch, "frozen:", frozen, flush = True)  
       
-    # Pruning av små vikter i klassificeraren
+    # Pruning of small weights in the classifier
     if (epoch == args.epochs or epoch%30 == 0) and args.epochs > 1:
         with torch.no_grad():
             torch.set_printoptions(profile = "full")
@@ -393,16 +393,16 @@ for epoch in range(1, args.epochs + 1):
     # Evaluate
     eval_info = eval_pipnet(net, valloader, epoch, device, log)
 
-    # --- DIN NYA DYNAMISKA SMYGTITT ---
-    with torch.no_grad():
-        w = net.module._classification.weight
-        print(f"\n---> SMYGTITT EPOK {epoch} <---", flush=True)
+    # # --- YOUR NEW DYNAMIC SNEAK PEEK ---
+    # with torch.no_grad():
+    #     w = net.module._classification.weight
+    #     print(f"\n---> SNEAK PEEK EPOCH {epoch} <---", flush=True)
         
-        for mod, (start, end) in modality_offsets.items():
-            # Plockar ut alla klassers vikter för just denna modalitets prototyper
-            active_count = (w[:, start:end] > 1e-3).sum().item()
-            print(f"Aktiva vikter | {mod.upper()}: {active_count}", flush=True)
-        print("-" * 30, flush=True)
+    #     for mod, (start, end) in modality_offsets.items():
+    #         # Extracting weights of all classes for this modality's prototypes
+    #         active_count = (w[:, start:end] > 1e-3).sum().item()
+    #         print(f"Active weights | {mod.upper()}: {active_count}", flush=True)
+    #     print("-" * 30, flush=True)
     
     log.log_values('log_epoch_overview',  epoch, eval_info['top1_accuracy'], eval_info['top3_accuracy'], eval_info['almost_sim_nonzeros'], eval_info['local_size_all_classes'], eval_info['almost_nonzeros'], eval_info['num non-zero prototypes'], train_info['train_accuracy'], train_info['loss'])
     

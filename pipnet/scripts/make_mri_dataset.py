@@ -345,4 +345,4 @@ def setup_npy_mri_dataframe(classes=["CN", "MCI", "AD"], adni_path="/home/maia-u
     })
     mri_merged = mri_merged[mri_merged["clinical_stage"].isin(classes)].reset_index(drop=True)
 
-    return mri_merged #[:110]  # TODO: remove. for testing purposes, use only first 100 entries
+    return mri_merged

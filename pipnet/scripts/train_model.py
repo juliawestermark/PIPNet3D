@@ -19,7 +19,7 @@ def train_pipnet(
         pretrain = False, 
         finetune = False, 
         progress_prefix: str = 'Train Epoch',
-        mask = None): # Mask är en Dict: {'mri': tensor, 'amy': tensor}
+        mask = None): # Mask is a Dict: {'mri': tensor, 'amy': tensor}
 
     # Make sure the model is in train mode
     net.train()
@@ -41,13 +41,13 @@ def train_pipnet(
     
     train_iter = tqdm(enumerate(train_loader), total=len(train_loader), desc=progress_prefix+'%s'%epoch, mininterval=2., ncols=0)
     
-    # Räkna parametrar (bara info)
+    # Count parameters (info only)
     count_param = 0
     for name, param in net.named_parameters():
         if param.requires_grad:
             count_param+=1  
     
-    # Bara printa en gång i början av epoken
+    # Print only once at the beginning of the epoch
     if epoch == 0 or epoch == 1:
         print("Number of parameters that require gradient: ", count_param, flush=True)
 
@@ -66,25 +66,25 @@ def train_pipnet(
     lrs_net = []
     lrs_class = []
 
-    # Cache för downsamplade globala masker
+    # Cache for downsampled global masks
     mask_downsampled = {} 
 
     # --- START TRAINING LOOP ---
     for i, (inputs1, inputs2, presence_masks, ys) in train_iter:       
         
-        # 1. Flytta data till Device
+        # 1. Move data to Device
         ys = ys.to(device)
         
         for k in inputs1: inputs1[k] = inputs1[k].to(device)
         for k in inputs2: inputs2[k] = inputs2[k].to(device)
         for k in presence_masks: presence_masks[k] = presence_masks[k].to(device)
         
-        # 2. Konkatenera View 1 och View 2 (Batch Size dubbleras)
+        # 2. Concatenate View 1 and View 2 (Batch Size is doubled)
         inputs_concat = {}
         for mod in inputs1.keys():
             inputs_concat[mod] = torch.cat([inputs1[mod], inputs2[mod]], dim=0)
 
-        # VIKTIGT: Dubblera även maskerna eftersom vi har dubbla antalet bilder nu
+        # IMPORTANT: Also double the masks since we have twice the number of images now
         presence_masks_concat = {}
         for mod in presence_masks.keys():
             presence_masks_concat[mod] = torch.cat([presence_masks[mod], presence_masks[mod]], dim=0)
@@ -94,20 +94,20 @@ def train_pipnet(
         optimizer_net.zero_grad(set_to_none=True)
        
         # 4. Forward Pass
-        # Net tar hand om missing modalities internt om presence_masks skickas med
+        # Net handles missing modalities internally if presence_masks are provided
         proto_features_dict, pooled, out = net(inputs_concat, masks=presence_masks_concat)
 
         # 5. --- GLOBAL ANATOMICAL MASKING ---
         if mask is not None:
             for mod, global_m in mask.items():
-                # Kolla om modaliteten finns i features OCH om vi inte redan cachat den
+                # Check if modality exists in features AND if not already cached
                 if mod in proto_features_dict and mod not in mask_downsampled:
                     if global_m is not None:
-                        # Hämta storlek från features (BS, NumProtos, D, H, W)
+                        # Get size from features (BS, NumProtos, D, H, W)
                         target_size = proto_features_dict[mod].shape[-3:] 
                         
                         temp_mask = global_m
-                        # Se till att dimensionerna stämmer för interpolate (1, 1, D, H, W)
+                        # Ensure dimensions are correct for interpolate (1, 1, D, H, W)
                         while temp_mask.ndim < 5:
                             temp_mask = temp_mask.unsqueeze(0)
                             
@@ -115,10 +115,10 @@ def train_pipnet(
                         downsampled = F.interpolate(temp_mask, size=target_size, mode='nearest')
                         mask_downsampled[mod] = (downsampled > 0.5).float().to(device)
             
-            # Applicera maskerna
+            # Apply the masks
             for mod in proto_features_dict.keys():
                 if mod in mask_downsampled:
-                    # Multiplicera features med masken (nollar ut bakgrunden)
+                    # Multiply features with the mask (zeros out the background)
                     proto_features_dict[mod] = proto_features_dict[mod] * mask_downsampled[mod]
         
         # 6. Calculate Loss
@@ -136,7 +136,7 @@ def train_pipnet(
             finetune, 
             criterion, 
             train_iter, 
-            presence_masks=presence_masks, # SKICKA MED MASKERNA HÄR
+            presence_masks=presence_masks,
             print = True, 
             EPS = 1e-8)
         
@@ -194,7 +194,7 @@ def calculate_loss(
         print = True, 
         EPS = 1e-10):
     
-    # Labels dupliceras (View 1 + View 2)
+    # Labels duplicated (View 1 + View 2)
     ys = torch.cat([ys1, ys1])
     
     # 1. Tanh Loss (Sparsity)
@@ -208,44 +208,44 @@ def calculate_loss(
     for mod in proto_features_dict.keys():
         pf_mod = proto_features_dict[mod]
         
-        # Dela upp i View 1 och View 2
+        # Split into View 1 and View 2
         pf1, pf2 = pf_mod.chunk(2)
         
         # Flatten spatial dimensions: (B, NumProtos, D, H, W) -> (B, NumProtos, D*H*W) -> (B*D*H*W, NumProtos)
-        # Notera: Flatten(end_dim=1) bakar ihop Batch och Spatiala dimensioner i dim 0.
+        # Note: Flatten(end_dim=1) merges Batch and Spatial dimensions in dim 0.
         embv1 = pf1.flatten(start_dim=2).permute(0,2,1).flatten(end_dim=1)
         embv2 = pf2.flatten(start_dim=2).permute(0,2,1).flatten(end_dim=1)
         
-        # --- ROBUST ALIGNMENT LOSS (Hanterar saknad data) ---
+        # --- ROBUST ALIGNMENT LOSS (Handles missing data) ---
         if presence_masks is not None and mod in presence_masks:
-            # Hämta masken [Batch]. reshape(-1) säkerställer att det är en 1D-vektor även om Batch=1
+            # Get the mask [Batch]. reshape(-1) ensures it's a 1D vector even if Batch=1
             mask = presence_masks[mod].reshape(-1) 
             
-            # Om ingen i batchen har denna modalitet, skippa
+            # If no one in the batch has this modality, skip
             if mask.sum() == 0:
                 continue
 
-            # Beräkna loss per sample/voxel
+            # Calculate loss per sample/voxel
             # l1 form: [Batch * SpatialPixels]
             l1 = align_loss_per_sample(embv1, embv2.detach(), EPS)
             l2 = align_loss_per_sample(embv2, embv1.detach(), EPS)
             
-            # --- FIX: Expandera masken för att matcha spatiala dimensioner ---
-            # l1.shape[0] är (Batch * Voxels). mask.shape[0] är (Batch).
+            # --- FIX: Expand the mask to match spatial dimensions ---
+            # l1.shape[0] is (Batch * Voxels). mask.shape[0] is (Batch).
             if l1.shape[0] != mask.shape[0]:
-                # Räkna ut hur många voxlar varje bild har
+                # Calculate how many voxels each image has
                 num_spatial_pixels = l1.shape[0] // mask.shape[0]
-                # Repetera masken: [1, 0] -> [1, 1, 1... , 0, 0, 0...]
+                # Repeat the mask: [1, 0] -> [1, 1, 1... , 0, 0, 0...]
                 mask_expanded = mask.repeat_interleave(num_spatial_pixels)
             else:
                 mask_expanded = mask
 
-            # Nolla ut loss för voxlar som tillhör saknade bilder
+            # Zero out loss for voxels belonging to missing images
             l1 = l1 * mask_expanded
             l2 = l2 * mask_expanded
             
-            # Medelvärde över enbart de existerande pixlarna
-            # Vi delar med summan av mask_expanded (totalt antal giltiga voxlar)
+            # Average over only the existing pixels
+            # We divide by the sum of mask_expanded (total number of valid voxels)
             mean_l1 = l1.sum() / (mask_expanded.sum() + EPS)
             mean_l2 = l2.sum() / (mask_expanded.sum() + EPS)
             
@@ -257,7 +257,7 @@ def calculate_loss(
         a_loss_pf += mod_loss
         num_active_modalities += 1
     
-    # Normalisera loss över antal modaliteter
+    # Normalize loss over the number of modalities
     if num_active_modalities > 0:
         a_loss_pf = a_loss_pf / num_active_modalities
 
@@ -298,7 +298,6 @@ def calculate_loss(
 
     return loss, acc
 
-# --- HJÄLPFUNKTIONER ---
 
 def align_loss(inputs, targets, EPS=1e-12):
     """Original (scalar) alignment loss used as fallback."""
@@ -310,8 +309,8 @@ def align_loss(inputs, targets, EPS=1e-12):
 
 def align_loss_per_sample(inputs, targets, EPS=1e-12):
     """
-    Beräknar alignment loss men returnerar en vektor [Batch_Size] 
-    istället för ett skalärt medelvärde. Detta möjliggör maskning.
+    Calculates alignment loss but returns a vector [Batch_Size] 
+    instead of a scalar mean. This allows for masking.
     """
     assert inputs.shape == targets.shape
     # Dot product per sample

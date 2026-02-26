@@ -38,27 +38,27 @@ class PIPNet(nn.Module):
 
     def forward(self, xs: dict, masks: dict = None, inference=False, threshold=None):
         """
-        threshold: Kan nu vara:
-                   1. None  -> Använder self.default_threshold (samma för alla)
-                   2. float -> T.ex. 0.1 (samma för alla)
-                   3. dict  -> T.ex. {'mri': 0.3, 'amy': 0.05} (olika för olika)
+        threshold: Can be:
+                   1. None  -> Uses self.default_threshold (same for all)
+                   2. float -> e.g., 0.1 (same for all)
+                   3. dict  -> e.g., {'mri': 0.3, 'amy': 0.05} (modality-specific)
         """
         
         proto_features_dict = {}
         pooled_list = []
 
-        # Förbered threshold-logiken
+        # Prepare threshold logic
         current_thresholds = {}
         if threshold is None:
-            # Fall 1: Använd default (float)
+            # Case 1: Use default (float)
             for m in self.modalities: current_thresholds[m] = self.default_threshold
         elif isinstance(threshold, float) or isinstance(threshold, int):
-            # Fall 2: En float skickades in (samma för alla)
+            # Case 2: A float was provided (same for all)
             for m in self.modalities: current_thresholds[m] = float(threshold)
         elif isinstance(threshold, dict):
-            # Fall 3: En dictionary skickades in (specifika krav)
+            # Case 3: A dictionary was provided (modality-specific)
             current_thresholds = threshold
-            # Fyll på med default om någon modalitet saknas i dicten
+            # Fill with default if any modality is missing in the dict
             for m in self.modalities:
                 if m not in current_thresholds:
                     current_thresholds[m] = self.default_threshold
@@ -69,35 +69,34 @@ class PIPNet(nn.Module):
             # 1. Backbone
             features = self._backbones[modality](x)
             
-            # 2. Add-on (Prototyper)
+            # 2. Add-on (Prototypes)
             proto_features = self._add_ons[modality](features)
             proto_features_dict[modality] = proto_features
             
             # 3. Pooling -> (bs, num_prototypes)
             pooled = self._pool(proto_features) 
             
-            # 4. MASKING (Hantera saknad data)
+            # 4. MASKING (Handle missing data)
             if masks is not None and modality in masks:
                 mask = masks[modality].to(pooled.device)
                 pooled = pooled * mask
             
-            # --- NYTT: APPLICERA THRESHOLD HÄR INNE ---
             if inference:
-                # Hämta tröskel för just denna modalitet
+                # Get threshold for this specific modality
                 thr = current_thresholds[modality]
                 
-                # Nolla ut allt under tröskeln
+                # Zero out everything below the threshold
                 pooled = torch.where(pooled < thr, 0., pooled)
 
             pooled_list.append(pooled)
 
-        # 5. Fusion (Nu består listan redan av thresholdade vektorer om inference=True)
+        # 5. Fusion (List already consists of thresholded vectors if inference=True)
         pooled_combined = torch.cat(pooled_list, dim=1) 
 
         # Classification
         out = self._classification(pooled_combined)
         
-        # Returnera
+        # Return
         if inference:
             return proto_features_dict, pooled_combined, out
         else:
@@ -108,7 +107,6 @@ base_architecture_to_features = {
     'resnet3D_18_kin400': video_resnet18_features,
     'convnext3D_tiny': convnext_tiny_3d_features,
     }
-
 
 # adapted from 
 # https://pytorch.org/docs/stable/_modules/torch/nn/modules/linear.html#Linear
@@ -149,7 +147,7 @@ def _get_backbone_channels(args, features):
         features_name = str(args.net).upper()
         
     if features_name.startswith('VIDEO') or features_name.startswith('RES') or features_name.startswith('CONV'):
-        # Hitta sista Conv3d lagret
+        # Find the last Conv3d layer
         return [i for i in features.modules() if isinstance(i, nn.Conv3d)][-1].out_channels
     else:
         raise Exception('other base architecture NOT implemented')
@@ -158,8 +156,8 @@ def _get_backbone_channels(args, features):
 def _create_add_on_layer(in_channels, num_prototypes):
     """Helper to create the prototype (add-on) layer"""
     if num_prototypes == 0:
-        # Om num_features är 0 används antalet kanaler från backbone som antal prototyper
-        # Detta är standard PIPNet beteende
+        # If num_features is 0, the number of channels from the backbone is used as the number of prototypes
+        # This is standard PIPNet behavior
         return nn.Sequential(nn.Softmax(dim=1),), in_channels
     else:
         print(f"Number of prototypes set from {in_channels} to {num_prototypes}. 1x1x1 conv layer added.", flush=True)
@@ -182,46 +180,28 @@ def get_network(num_classes: int, args: argparse.Namespace):
     channels = 1
     
     for mod in modalities:
-        # --- NY KOD BÖRJAR HÄR ---
-        # 1. Bestäm antal kanaler baserat på modalitet
-        # if mod == 'mri':
-        #     channels = 1
-        # elif mod == 'amy':
-        #     channels = 4
-        # else:
-        #     channels = 3 # Fallback om du lägger till något annat (t.ex. RGB-video)
-
+        
         print(f"  initializing backbone for {mod} (channels={channels})...", flush=True)
         
-        # 2. Skapa Backbone och skicka med in_channels
-        # OBS: Detta kräver att du har uppdaterat video_resnet18_features enligt min tidigare instruktion!
+        # 1. Create Backbone
         backbone = base_architecture_to_features[args.net](
-            pretrained = not args.disable_pretrained#, 
-            #in_channels = channels
+            pretrained = not args.disable_pretrained
         )
-        # --- NY KOD SLUTAR HÄR ---
-        # # 1. Skapa Backbone
-        # # Här antar vi samma arkitektur för alla, men du kan ha en if-sats om du vill ha olika
-        # print(f"  initializing backbone for {mod}...", flush=True)
-        # backbone = base_architecture_to_features[args.net](pretrained = not args.disable_pretrained)
         
-        # 2. Hitta output channels
-        backbone_out_channels = _get_backbone_channels(args, backbone) # (Använd hjälpfunktionen från förra svaret)
+        # 2. Find output channels
+        backbone_out_channels = _get_backbone_channels(args, backbone) 
 
-        # 3. Skapa Add-on layer
-        # Här kan du välja om alla ska ha samma antal prototyper eller olika
-        # T.ex. args.num_features delat på antal modaliteter?
-        # För nu kör vi args.num_features per modalitet.
+        # 3. Create Add-on layer
         add_on, n_protos = _create_add_on_layer(backbone_out_channels, args.num_features)
         
-        # 4. Lägg in i ModuleDicts
+        # 4. Add to ModuleDicts
         backbones[mod] = backbone
         add_ons[mod] = add_on
         
         total_prototypes += n_protos
         prototypes_per_modality[mod] = n_protos
 
-    # 5. Pooling (delad)
+    # 5. Pooling (shared)
     pool_layer = nn.Sequential(
         nn.AdaptiveMaxPool3d(output_size=(1,1,1)), 
         nn.Flatten()
@@ -235,11 +215,5 @@ def get_network(num_classes: int, args: argparse.Namespace):
     else:
         classification_layer = NonNegLinear(total_prototypes, num_classes, bias=False)
         
-    # Returnera ModuleDicts istället för enskilda lager
+    # Return ModuleDicts instead of individual layers
     return backbones, add_ons, pool_layer, classification_layer, total_prototypes
-
-
-
-
-
-

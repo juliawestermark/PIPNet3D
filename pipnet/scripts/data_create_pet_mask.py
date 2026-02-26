@@ -7,12 +7,12 @@ import re
 from nilearn.image import mean_img, threshold_img
 
 def create_pet_dataframe_from_filesystem(adni_path):
-    """Skannar mappstrukturen och returnerar en DataFrame med PET-filer."""
+    """Scans the directory structure and returns a DataFrame with PET file information."""
     root = Path(adni_path)
     data_records = []
     
     subjects = sorted([p for p in root.iterdir() if p.is_dir()])
-    print(f"[INFO] Skannar {len(subjects)} patient-mappar i {adni_path}...")
+    print(f"Scanning {len(subjects)} subject directories in {adni_path}...")
 
     for subj_dir in subjects:
         subject_id = subj_dir.name
@@ -34,8 +34,10 @@ def create_pet_dataframe_from_filesystem(adni_path):
                 if not date_dir.is_dir(): continue
                 
                 date_str_raw = date_dir.name.split('_')[0]
-                try: pd.to_datetime(date_str_raw)
-                except: continue
+                try: 
+                    pd.to_datetime(date_str_raw)
+                except: 
+                    continue
 
                 nifti_files = list(date_dir.rglob("*.nii.gz"))
                 if not nifti_files: continue
@@ -53,41 +55,33 @@ def create_pet_dataframe_from_filesystem(adni_path):
                 })
 
     df = pd.DataFrame(data_records)
-    print(f"[INFO] Hittade totalt {len(df)} PET-bilder.")
+    print(f"Found {len(df)} PET images.")
     return df
 
 def create_global_pet_mask(ADNI_PATH_PET, OUTPUT_ROOT, num_samples=50):
-    """Skapar en global binär mask för PET-bilder."""
-    modality = "amy" # Eller "pet" beroende på vad du kallar den
+    """Generates a global binary mask based on a sample of PET images."""
+    modality = "amy"
     MASK_FILENAME_NII = "global_mask.nii.gz"
     MASK_FILENAME_NPY = "global_mask.npy"
     
-    mask_dir = os.path.join(OUTPUT_ROOT, "masks")
-    os.makedirs(mask_dir, exist_ok=True)
-    
-    modality_dir = os.path.join(mask_dir, modality)
+    modality_dir = os.path.join(OUTPUT_ROOT, "masks", modality)
     os.makedirs(modality_dir, exist_ok=True)
 
-    print("1. Laddar lista över filer via nya funktionen...")
     df = create_pet_dataframe_from_filesystem(ADNI_PATH_PET)
     
-    # Ta ett stickprov för att inte spränga RAM-minnet
+    # Sample files to manage RAM usage
     nifti_files = df['file_path'].sample(n=min(num_samples, len(df)), random_state=42).tolist()
-    print(f"Använder {len(nifti_files)} bilder för att bygga genomsnittet.")
+    print(f"Generating mean brain from {len(nifti_files)} images...")
 
-    print("2. Beräknar genomsnittlig hjärna (Nilearn)...")
     mean_brain = mean_img(nifti_files)
     mean_brain.to_filename(os.path.join(modality_dir, "mean_brain_reference.nii.gz"))
 
-    print("3. Trösklar och skapar binär mask...")
-    # OBS: 0.1 är en bra gissning, men om masken blir för liten/stor kan vi ändra denna!
+    # Create binary mask using thresholding
     mask_nii = threshold_img(mean_brain, threshold=0.1, copy=True)
-    
     nii_save_path = os.path.join(modality_dir, MASK_FILENAME_NII)
     mask_nii.to_filename(nii_save_path)
-    print(f"NIfTI-mask sparad till: {nii_save_path}")
 
-    print("4. Konverterar till .npy (Nibabel)...")
+    # Convert to .npy format for pipeline compatibility
     img = nib.load(nii_save_path)
     mask_arr = img.get_fdata().astype(np.float32)
     mask_arr = (mask_arr > 0.001).astype(np.uint8) 
@@ -95,8 +89,8 @@ def create_global_pet_mask(ADNI_PATH_PET, OUTPUT_ROOT, num_samples=50):
     npy_save_path = os.path.join(modality_dir, MASK_FILENAME_NPY)
     np.save(npy_save_path, mask_arr)
     
-    print(f"✅ Klar! Global PET-mask sparad som .npy: {npy_save_path}")
-    print(f"Maskens dimensioner: {mask_arr.shape}")
+    print(f"Success! Global mask saved to: {npy_save_path}")
+    print(f"Mask shape: {mask_arr.shape}")
 
 if __name__ == "__main__":
     BASE_PATH = "/home/maia-user"

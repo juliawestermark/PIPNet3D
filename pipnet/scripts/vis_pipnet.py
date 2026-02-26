@@ -26,14 +26,14 @@ import pandas as pd
 
 import gc
 
-# Regex för att hitta Subject ID i filnamn
+# Regex to find Subject ID in filename
 _pattern_subj = re.compile(r"(\d{3}_S_\d+)")
 
 def create_edge_mask_spatial(img_shape, d_min, d_max, h_min, h_max, w_min, w_max):
-    # img_shape är (1, 1, D, H, W) eller (1, 3, D, H, W)
+    # img_shape is (1, 1, D, H, W) or (1, 3, D, H, W)
     depth, height, width = img_shape[-3], img_shape[-2], img_shape[-1]
     
-    # Säkra upp så vi inte går utanför bilden
+    # Ensure we don't go outside the image bounds
     d_max = min(d_max, depth)
     h_max = min(h_max, height)
     w_max = min(w_max, width)
@@ -41,40 +41,37 @@ def create_edge_mask_spatial(img_shape, d_min, d_max, h_min, h_max, w_min, w_max
     mask = torch.zeros((1, 1, depth, height, width), dtype=torch.bool)
     erosion = torch.zeros((1, 1, depth, height, width), dtype=torch.bool)
 
-    # Kolla att vi har valida intervall
+    # Check for valid intervals
     if d_min >= d_max or h_min >= h_max or w_min >= w_max:
-        return mask # Returnera tom mask om koordinaterna är fel
+        return mask 
 
     mask[:, :, d_min:d_max, h_min:h_max, w_min:w_max] = True
     
-    # Erosion för att skapa bara en kant (outline)
-    # Vi måste vara försiktiga så vi inte eroderar bort allt om boxen är liten
+    # Erosion to create only an outline
     if (d_max - d_min) > 2 and (h_max - h_min) > 2 and (w_max - w_min) > 2:
         erosion[:, :, d_min+1:d_max-1, h_min+1:h_max-1, w_min+1:w_max-1] = True
     
     edge_mask = mask & (~erosion)
     return edge_mask
 
-# --- NY: Dynamisk patch-storlek beroende på bildens faktiska storlek ---
 def get_patch_size_dynamic(current_img_shape, args):
     """
-    Räknar ut patch-storlek baserat på den AKTUELLA bildens dimensioner,
-    inte de globala argumenten.
+    Calculates patch size based on the ACTUAL image dimensions,
+    not the global arguments.
     
     current_img_shape: (D, H, W) tuple
     """
     d, h, w = current_img_shape
     
-    # args.dshape etc är nätverkets output-grid (t.ex. 1x1x1 eller 7x7x7)
-    # Vi delar bildens storlek med grid-storleken för att se hur många pixlar en "prototyp" täcker.
+    # args.dshape etc is the network's output grid
     patch_z = round(d / args.dshape)
     patch_y = round(h / args.hshape)
-    patch_x = round(w / args.hshape) # OBS: args.hshape används ofta för width också i PIPNet-kod, kolla om du har args.wshape
+    patch_x = round(w / args.hshape) 
     
-    # Skydd mot division by zero om grid är 1
+    # Protection against division by zero if grid is 1
     denom_z = max(1, args.dshape - 1)
     denom_y = max(1, args.hshape - 1)
-    denom_x = max(1, args.wshape - 1) # eller hshape om wshape saknas
+    denom_x = max(1, args.wshape - 1) 
 
     skip_z = round((d - patch_z) / denom_z)
     skip_y = round((h - patch_y) / denom_y)
@@ -84,7 +81,7 @@ def get_patch_size_dynamic(current_img_shape, args):
 
 def get_img_coordinates(curr_slices, curr_rows, curr_cols, softmaxes_shape, patchsize, skip_z, skip_y, skip_x, d_idx, h_idx, w_idx):
     """
-    Beräknar koordinater baserat på bildens FAKTISKA storlek (curr_...)
+    Calculates coordinates based on the ACTUAL image size (curr_...)
     """
     d_min = d_idx * skip_z
     d_max = min(curr_slices, d_idx * skip_z + patchsize[0])
@@ -95,12 +92,12 @@ def get_img_coordinates(curr_slices, curr_rows, curr_cols, softmaxes_shape, patc
     w_min = w_idx * skip_x
     w_max = min(curr_cols, w_idx * skip_x + patchsize[2])                                    
     
-    # Justera för sista indexet (för att täcka kanten)
+    # Adjust for the last index to cover the edge
     if d_idx == softmaxes_shape[2]-1: d_max = curr_slices
     if h_idx == softmaxes_shape[3]-1: h_max = curr_rows
     if w_idx == softmaxes_shape[4]-1: w_max = curr_cols
     
-    # Om patchen hamnar utanför, dra in den
+    # If the patch falls outside, pull it in
     if d_max == curr_slices: d_min = max(0, curr_slices - patchsize[0])
     if h_max == curr_rows: h_min = max(0, curr_rows - patchsize[1])
     if w_max == curr_cols: w_min = max(0, curr_cols - patchsize[2])
@@ -154,7 +151,7 @@ def visualize_topk(net, projectloader, num_classes, device, foldername, args, sa
                     num_protos = m.out_channels
                     break
         
-        # Fallback till args
+        # Fallback to args
         if num_protos == 0:
             num_protos = getattr(args, 'num_features', 512)
             if num_protos == 0: 
@@ -173,7 +170,7 @@ def visualize_topk(net, projectloader, num_classes, device, foldername, args, sa
     net.eval()
     classification_weights = net.module._classification.weight
 
-    # === STEG 1: SÖK EFTER TOP K ===
+    # === STEP 1: SEARCH FOR TOP K ===
     desc_text = f"Search top{k}"
     img_iter = tqdm(enumerate(projectloader), total=len(projectloader), desc=desc_text, mininterval=2., ncols=0)
     topks = dict()
@@ -211,12 +208,12 @@ def visualize_topk(net, projectloader, num_classes, device, foldername, args, sa
             
     abstained = 0
     
-    # === STEG 2: LOKALISERA OCH PLOTTA DIREKT (Minnessnålt!) ===
+    # === STEP 2: LOCALIZE AND PLOT DIRECTLY (Memory efficient) ===
     desc_text = f"Localize & Plot"
     img_iter = tqdm(enumerate(projectloader), total=len(projectloader), desc=desc_text, mininterval=2., ncols=0)
     
     for i, (xs, ms, ys) in img_iter:
-        # Om bilden finns med i vår "Top-K" lista för någon prototyp
+        # If the image is in our "Top-K" list for any prototype
         if i in alli:
             ys = ys.to(device)
             xs = {key: val.to(device) for key, val in xs.items()}
@@ -226,7 +223,7 @@ def visualize_topk(net, projectloader, num_classes, device, foldername, args, sa
                 softmaxes_dict, pooled, out = net(xs, masks=ms, inference=True, threshold=threshold)             
                 outmax = torch.amax(out, dim=1)[0]
             
-            # Gå igenom prototyperna för att se VILKA som ville ha denna bild
+            # Go through prototypes to see WHICH ones wanted this image
             for p in topks.keys():
                 if p not in prototypes_not_used:
                     for idx, score in topks[p]:
@@ -238,7 +235,7 @@ def visualize_topk(net, projectloader, num_classes, device, foldername, args, sa
                             
                             img_tensor = xs[target_mod].cpu()
 
-                            # Hoppa över om bilden är tom
+                            # Skip if the image is empty
                             if img_tensor.max() <= img_tensor.min() + 1e-9:
                                 continue
 
@@ -252,7 +249,7 @@ def visualize_topk(net, projectloader, num_classes, device, foldername, args, sa
                             h_idx = max_idx_per_prototype_h[local_p, max_idx_per_prototype_w[local_p]].item()
                             w_idx = max_idx_per_prototype_w[local_p].item()
                             
-                            # Beräkna koordinater
+                            # Calculate coordinates
                             curr_slices, curr_rows, curr_cols = img_tensor.shape[2], img_tensor.shape[3], img_tensor.shape[4]
                             patchsize, skip_z, skip_y, skip_x = get_patch_size_dynamic((curr_slices, curr_rows, curr_cols), args)
                             ps_coord = get_img_coordinates(curr_slices, curr_rows, curr_cols, softmaxes.shape, patchsize, skip_z, skip_y, skip_x, d_idx, h_idx, w_idx)
@@ -261,27 +258,27 @@ def visualize_topk(net, projectloader, num_classes, device, foldername, args, sa
                             if (d_max <= d_min) or (h_max <= h_min) or (w_max <= w_min):
                                 continue
 
-                            # --- RITA OCH SPARA DIREKT HÄR ---
+                            # --- DRAW AND SAVE DIRECTLY HERE ---
                             
-                            # 1. Klipp ut patchen
+                            # 1. Cut out the patch
                             img_tensor_patch = img_tensor[0, :, d_min:d_max, h_min:h_max, w_min:w_max].clone()
                             if img_tensor_patch.shape[0] == 1:
-                                img_tensor_patch = img_tensor_patch.repeat(3, 1, 1, 1) # Gör patchen till RGB
+                                img_tensor_patch = img_tensor_patch.repeat(3, 1, 1, 1) # Make the patch RGB
                             
-                            # 2. Förbered hela bilden med röd låda
+                            # 2. Prepare the whole image with a red box
                             img_tensor_full = img_tensor.clone()
                             if img_tensor_full.shape[1] == 1:
                                 img_tensor_full = img_tensor_full.repeat(1, 3, 1, 1, 1)
                                 
                             spatial_mask = create_edge_mask_spatial(img_tensor_full.shape, d_min, d_max, h_min, h_max, w_min, w_max)
-                            img_tensor_full[:, 0:1][spatial_mask] = 1.0  # Röd kanal
-                            img_tensor_full[:, 1:2][spatial_mask] = 0.0  # Grön
-                            img_tensor_full[:, 2:3][spatial_mask] = 0.0  # Blå
+                            img_tensor_full[:, 0:1][spatial_mask] = 1.0  # Red channel
+                            img_tensor_full[:, 1:2][spatial_mask] = 0.0  # Green
+                            img_tensor_full[:, 2:3][spatial_mask] = 0.0  # Blue
                             
                             image_to_save = img_tensor_full.numpy()
                             patch_to_save = img_tensor_patch.numpy()
 
-                            # 3. Skapa filnamn
+                            # 3. Create filename
                             img_path = dataset_paths[target_mod][i]
                             try:
                                 img_str = str(img_path)
@@ -299,7 +296,7 @@ def visualize_topk(net, projectloader, num_classes, device, foldername, args, sa
                             plot_name = os.path.join(plot_dir, ps_name + ".png")
                             plot_patch_name = os.path.join(plot_dir, ps_patch_name + ".png")
                             
-                            # 4. Spara och Plotta
+                            # 4. Save and Plot
                             if plot:
                                 try:
                                     plot_rgb_slices(image_to_save[0], title=f"Proto {p} ({target_mod})", num_columns=10, bottom=True, save_path=plot_name)   
@@ -313,14 +310,14 @@ def visualize_topk(net, projectloader, num_classes, device, foldername, args, sa
                                 
                             saved[p] += 1
                             
-                            # 5. FRIGÖR MINNET DIREKT (Magin händer här!)
+                            # 5. FREE MEMORY DIRECTLY
                             del img_tensor_full, image_to_save, patch_to_save, spatial_mask, img_tensor_patch
                             gc.collect()
 
     print("Abstained: ", abstained, flush = True)
     
-    # OBS: Vi måste returnera tomma dicts för de variabler som huvudskriptet förväntar sig, 
-    # eftersom vi nu inte sparar dessa listor i RAM längre!
+    # NOTE: We must return empty dicts for the variables the main script expects, 
+    # since we no longer save these lists in RAM!
     return topks, dict(), dict()
     
 
@@ -371,7 +368,6 @@ def plot_local_explanation(xs, local_explanation, modality_offsets, title="", fo
             base, ext = os.path.splitext(save_path)
             mod_save_path = f"{base}_{mod}{ext}"
             try:
-                # plot_rgb_slices(img_tensor[0].numpy(), title=f"{title} \n({mod})", legend=ps_scores, save_path=mod_save_path)
                 plot_rgb_slices(
                     img_tensor[0].numpy(), 
                     title=f"{title} ({mod})",

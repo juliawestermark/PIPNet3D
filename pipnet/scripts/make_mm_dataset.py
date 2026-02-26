@@ -1,6 +1,6 @@
 import os
 import pandas as pd
-import numpy as np # Behövs ibland för NaNs
+import numpy as np 
 
 v_map = {
     "v02": 0,
@@ -15,7 +15,7 @@ v_map = {
 }
 
 # -----------------------------------------------------------------------------
-# HJÄLPFUNKTIONER (Paths & Datum)
+# HELPERS (Paths & Dates)
 # -----------------------------------------------------------------------------
 def build_mri_npy_file_path(row, preprocessed_root, image_type="mri"):
     return os.path.join(preprocessed_root, row["individual_id"], image_type, f"{row['exam_id']}.npy")
@@ -75,7 +75,7 @@ def load_mri_csv(adni_path):
         "Output collection GUID": "exam_id", "Individual's ID": "individual_id", "TimePoint": "time_point"
     })
     
-    # Validering mot DXSUM
+    # Validation against DXSUM
     valid_ids = set(mri["individual_id"])
     if os.path.exists(dx_path):
         dx = pd.read_csv(dx_path)
@@ -84,7 +84,7 @@ def load_mri_csv(adni_path):
     mri["file_path"] = mri.apply(build_mri_npy_file_path, args=(adni_path, "mri"), axis=1)
     mri = mri[(mri["Job status"] == "completed") & mri["file_path"].apply(os.path.exists) & (mri["time_point"] != "tau") & mri["individual_id"].isin(valid_ids)].copy()
 
-    # Datum-logik
+    # Date logic
     if os.path.exists(dx_path):
         dx = pd.read_csv(dx_path).rename(columns={"PTID": "individual_id"})
         dx["EXAMDATE"] = pd.to_datetime(dx["EXAMDATE"].fillna(dx["USERDATE"]), errors='coerce')
@@ -115,7 +115,7 @@ def load_single_modality_dataset(classes, adni_path_mri, adni_path_pet, modality
 
     if df.empty: return pd.DataFrame()
 
-    # Diagnos
+    # Diagnosis
     dx_path = os.path.join(adni_path_mri, "csv", "DXSUM_10Feb2026.csv")
     if not os.path.exists(dx_path): return pd.DataFrame()
     
@@ -128,7 +128,7 @@ def load_single_modality_dataset(classes, adni_path_mri, adni_path_pet, modality
     df["exam_date"] = pd.to_datetime(df["exam_date"])
     df["individual_id"] = df["individual_id"].astype(str)
     
-    # Matcha diagnos
+    # Match diagnosis
     df["anchor_date"] = df["exam_date"]
     matched = pd.merge_asof(
         df.sort_values("anchor_date"),
@@ -139,15 +139,14 @@ def load_single_modality_dataset(classes, adni_path_mri, adni_path_pet, modality
 
     final_df = matched[matched["clinical_stage"].isin(classes)].reset_index(drop=True)
     
-    # Deduplicering för Single Modality
+    # Deduplication for Single Modality
     col_name = "file_path" if "file_path" in final_df.columns else f"file_path_{modality}"
     if col_name in final_df.columns:
-        # Sortera för att behålla den med närmast diagnosdatum vid dubbletter
         final_df["time_diff"] = (final_df["exam_date"] - final_df["anchor_date"]).abs()
         final_df = final_df.sort_values(by=["individual_id", "time_diff"])
         final_df = final_df.drop_duplicates(subset=[col_name], keep='first').drop(columns=["time_diff"])
 
-    # Rename till standardformat
+    # Rename to standard format
     if "file_path" in final_df.columns:
         final_df = final_df.rename(columns={"file_path": f"file_path_{modality}", "exam_id": f"exam_id_{modality}"})
 
@@ -174,7 +173,7 @@ def load_multimodal_dataset(classes, adni_path_mri, adni_path_pet, modalities, s
         df["exam_date"] = pd.to_datetime(df["exam_date"])
         df["individual_id"] = df["individual_id"].astype(str)
 
-    # Matchning
+    # Matching
     mri_to_pet = pd.merge_asof(
         mri.sort_values("exam_date"), pet.sort_values("exam_date"),
         by="individual_id", left_on="exam_date", right_on="exam_date",
@@ -199,7 +198,7 @@ def load_multimodal_dataset(classes, adni_path_mri, adni_path_pet, modalities, s
 
     if combined.empty: return pd.DataFrame()
 
-    # Diagnos
+    # Diagnosis
     combined["anchor_date"] = combined["exam_date"]
     matched = pd.merge_asof(
         combined.sort_values("anchor_date"),
@@ -211,25 +210,20 @@ def load_multimodal_dataset(classes, adni_path_mri, adni_path_pet, modalities, s
     final_df = matched[matched["clinical_stage"].isin(classes)].reset_index(drop=True)
 
     # -------------------------------------------------------------------------
-    # 6. BALANSERING (Endast PAIRED DATA om balanced=True)
+    # BALANCING (Only PAIRED DATA if balanced=True)
     # -------------------------------------------------------------------------
     if balanced:
         print("--- [BALANCING ACTIVATED: STRICT PAIRED ONLY] ---")
         n_before = len(final_df)
         
-        # Skapa lista på kolumner som måste finnas (t.ex. file_path_mri och file_path_amy)
         required_cols = [f"file_path_{mod}" for mod in modalities]
         
-        # 'how=any' betyder: Om NÅGON av dessa saknas (är NaN), kasta raden.
-        # Detta behåller bara de rader där ALLA modaliteter finns.
         final_df = final_df.dropna(subset=required_cols, how='any').reset_index(drop=True)
         
         n_after = len(final_df)
         print(f"Balancing: Kept only paired data. Rows: {n_before} -> {n_after}")
 
-    # (Om balanced=False så behåller vi även unmatched rader, t.ex. mri-only)
-
-    # 7. Filtrera bort helt tomma rader (om något gått fel)
+    # Filter out completely empty rows
     cols_to_check = [f"file_path_{mod}" for mod in modalities]
     valid_cols = [c for c in cols_to_check if c in final_df.columns]
     if valid_cols:

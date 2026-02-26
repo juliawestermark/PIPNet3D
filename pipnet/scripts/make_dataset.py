@@ -40,13 +40,7 @@ from make_mm_dataset import load_npy_dataset
 
 
 def crop_fixed_rectangular(image_volume, target_shape, threshold_percent=None):
-    """
-    Supersnabb Center Crop.
-    Eftersom datan är 'Aligned' vet vi att hjärnan är i mitten.
-    Vi behöver inte söka efter den.
-    """
-    
-    # 1. Hämta dimensioner
+    # 1. Get dimensions
     if image_volume.ndim == 4:
         # (C, D, H, W)
         vol_dims = image_volume.shape[1:]
@@ -57,12 +51,12 @@ def crop_fixed_rectangular(image_volume, target_shape, threshold_percent=None):
     d_in, h_in, w_in = vol_dims
     tgt_d, tgt_h, tgt_w = target_shape
 
-    # 2. Beräkna mitten direkt (Matematiskt center)
+    # 2. Calculate the center directly (Mathematical center)
     center_z = d_in // 2
     center_y = h_in // 2
     center_x = w_in // 2
 
-    # 3. Beräkna start- och slutpunkter för crop-boxen
+    # 3. Calculate start and end points for the crop box
     z_start = center_z - tgt_d // 2
     y_start = center_y - tgt_h // 2
     x_start = center_x - tgt_w // 2
@@ -71,18 +65,18 @@ def crop_fixed_rectangular(image_volume, target_shape, threshold_percent=None):
     y_end = y_start + tgt_h
     x_end = x_start + tgt_w
 
-    # 4. Hantera gränser (Om boxen går utanför bilden, eller bilden är mindre än boxen)
-    # Source (Bildens koordinater)
+    # 4. Handle boundaries (If the box goes outside the image, or the image is smaller than the box)
+    # Source (Image coordinates)
     src_z_start = max(0, z_start); src_z_end = min(d_in, z_end)
     src_y_start = max(0, y_start); src_y_end = min(h_in, y_end)
     src_x_start = max(0, x_start); src_x_end = min(w_in, x_end)
     
-    # Destination (Den nya boxens koordinater)
+    # Destination (The new box's coordinates)
     dst_z_start = max(0, -z_start)
     dst_y_start = max(0, -y_start)
     dst_x_start = max(0, -x_start)
     
-    # 5. Skapa och fyll volymen (Kopiera data)
+    # 5. Create and fill the volume (Copy data)
     dtype = image_volume.dtype
     
     if image_volume.ndim == 4:
@@ -165,11 +159,11 @@ def get_mm_paths(
         modalities=["mri"]
     ):
     """
-    Multimodal split på SUBJEKT-NIVÅ.
-    Garanterar att inget subjekt läcker mellan train/val/test.
+    Multimodal split at the SUBJECT LEVEL.
+    Guarantees that no subject leaks between train/val/test.
     """
 
-    # 1. Identifiera unika subjekt
+    # 1. Identify unique subjects
     unique_subjects_df = directory_dataframe.drop_duplicates(subset=["individual_id"])
     unique_subjects = unique_subjects_df["individual_id"].values
     unique_labels = unique_subjects_df["clinical_stage"].values
@@ -216,24 +210,23 @@ def get_mm_paths(
 
 
 class AugSupervisedDataset(torch.utils.data.Dataset):
-    # ÄNDRING: target_shapes istället för img_shape
     def __init__(self, X_paths, y, dic_classes, target_shapes, mod_shape, transform=None, drop_out = None):
         self.X_paths = X_paths
         self.y = y
-        self.transform = transform # Detta är nu en DICTIONARY: {modality: transform}
+        self.transform = transform # This is now a DICTIONARY: {modality: transform}
         self.img_labels = y
         self.classes = list(dic_classes.keys())
         self.class_to_idx = dic_classes
         self.modalities = list(X_paths.keys())
         self.target_shapes = target_shapes # Dict: {mod: (D, H, W)}
-        self.mod_shape = mod_shape # Dict: {mod: (D, H, W)} (Originalstorlek innan resize)
+        self.mod_shape = mod_shape # Dict: {mod: (D, H, W)} (Original size before resize)
         self.drop_out = drop_out
 
     def __len__(self):
         return len(self.y)
 
     def _get_empty_volume(self, modality):
-        # Hämtar target shape för denna modalitet för att skapa rätt tom tensor
+        # Gets the target shape for this modality to create the correct empty tensor
         t_shape = self.target_shapes[modality]
         return torch.zeros((3, *t_shape), dtype=torch.float32)
 
@@ -243,7 +236,7 @@ class AugSupervisedDataset(torch.utils.data.Dataset):
         
         try:
             vol = np.load(path).astype(np.float32)
-            # Crop använder ORIGINAL formen (mod_shape)
+            # Crop uses the ORIGINAL shape (mod_shape)
             shape = self.mod_shape[modality]
             
             if vol.ndim == 4: vol = vol[:, :, :, 1]
@@ -265,16 +258,15 @@ class AugSupervisedDataset(torch.utils.data.Dataset):
         out_dict = {}
         masks = {}
 
-        # --- STEG 1: KOLLA VILKA MODALITETER SOM FAKTISKT FINNS ---
-        # Vi måste veta hur många vi har INNAN vi börjar droppa dem.
+        # We need to know how many we have BEFORE we start dropping them.
         present_modalities = []
         for m in self.modalities:
             path = self.X_paths[m][idx]
-            # Enkel koll om path är giltig (samma logik som i _load_volume)
+            # Simple check if path is valid (same logic as in _load_volume)
             if not (pd.isna(path) or str(path).lower() == 'nan'):
                 present_modalities.append(m)
         
-        # Antal giltiga modaliteter för denna patient
+        # Number of valid modalities for this patient
         num_present = len(present_modalities)
 
         for mod in self.modalities:
@@ -284,24 +276,23 @@ class AugSupervisedDataset(torch.utils.data.Dataset):
             should_drop = False
             
             if (self.drop_out is not None) and (mod in self.drop_out) and (mask == 1.0):
-                # Vi får bara droppa om vi inte gör patienten helt "tom"
+                # We can only drop if we don't make the patient completely "empty"
                 if num_present > 1:
                     if torch.rand(1).item() < self.drop_out[m]:
                         should_drop = True
             
             if should_drop:
-                # Nolla ut volymen och masken
+                # Zero out the volume and the mask
                 volume = self._get_empty_volume(mod)
                 mask = 0.0
-                # (Vi minskar inte num_present här, för vi baserar beslutet på originaldatat)
+                # (We don't decrease num_present here, because we base the decision on the original data)
             
             if mask == 1.0 and self.transform:
-                # --- ÄNDRING: Hämta modalitetsspecifik transform ---
                 if isinstance(self.transform, dict):
                     mod_transform = self.transform[mod]
                     volume = mod_transform(volume)
                 else:
-                    # Fallback om man råkar skicka en vanlig transform
+                    # Fallback if a standard transform is sent by mistake
                     volume = self.transform(volume)
 
                 mi, ma = volume.min(), volume.max()
@@ -314,7 +305,6 @@ class AugSupervisedDataset(torch.utils.data.Dataset):
 
 
 class TwoAugSelfSupervisedDataset(torch.utils.data.Dataset):
-    # ÄNDRING: target_shapes istället för img_shape
     def __init__(self, X_paths, y, dic_classes, target_shapes, mod_shape, transform=None, drop_out=None):
         self.X_paths = X_paths
         self.y = y
@@ -333,9 +323,8 @@ class TwoAugSelfSupervisedDataset(torch.utils.data.Dataset):
         return torch.zeros((3, *t_shape), dtype=torch.float32)
 
     def _process_view(self, volume, is_present, modality):
-        """Applicerar modalitets-specifik transform."""
+        """Applies modality-specific transform."""
         if is_present and self.transform:
-            # --- ÄNDRING: Välj rätt transform ---
             if isinstance(self.transform, dict):
                 vol = self.transform[modality](volume)
             else:
@@ -352,7 +341,6 @@ class TwoAugSelfSupervisedDataset(torch.utils.data.Dataset):
         view2_dict = {}
         masks = {}
 
-        # 1. KOLLA VILKA MODALITETER SOM FINNS (För att inte droppa om bara 1 finns)
         present_mods = []
         for m in self.modalities:
             p = self.X_paths[m][idx]
@@ -361,7 +349,6 @@ class TwoAugSelfSupervisedDataset(torch.utils.data.Dataset):
         
         num_present = len(present_mods)
 
-        # 2. BESTÄM VILKA SOM SKA DROPPAS (Gäller både view1 och view2)
         dropped_mods = set()
         if self.drop_out and num_present > 1:
             for m in present_mods:
@@ -376,7 +363,7 @@ class TwoAugSelfSupervisedDataset(torch.utils.data.Dataset):
             is_dropped = (mod in dropped_mods)
 
             if is_missing or is_dropped:
-                # Skapa tom tensor
+                # Create empty tensor
                 raw_tensor = self._get_empty_volume(mod)
                 is_present = False
                 mask_val = 0.0
@@ -397,7 +384,7 @@ class TwoAugSelfSupervisedDataset(torch.utils.data.Dataset):
                     is_present = False
                     mask_val = 0.0
 
-            # Skicka med 'mod' så vi vet vilken transform som ska användas
+            # Pass 'mod' so we know which transform to use
             view1_dict[mod] = self._process_view(raw_tensor, is_present, mod)
             
             if is_present: raw_tensor_clone = raw_tensor.clone()
@@ -413,7 +400,7 @@ def create_datasets(directory_dataframe, transforms_dic, dic_classes, n_fold, cu
     X_val, y_val, _ = get_mm_paths(directory_dataframe, dic_classes, "val", False, n_fold, current_fold, test_split, seed, modalities)
     X_test, y_test, _ = get_mm_paths(directory_dataframe, dic_classes, "test", False, n_fold, current_fold, test_split, seed, modalities)
 
-    # transforms_dic är nu en nestlad dict: transforms_dic['train']['mri'], transforms_dic['train']['amy'] etc.
+    # transforms_dic is now a nested dict: transforms_dic['train']['mri'], transforms_dic['train']['amy'] etc.
 
     trainset = TwoAugSelfSupervisedDataset(X_train, y_train, dic_classes, target_shapes, mod_shape, transform=transforms_dic["train"], drop_out=drop_out)
     trainset_pretraining = TwoAugSelfSupervisedDataset(X_train, y_train, dic_classes, target_shapes, mod_shape, transform=transforms_dic["train"], drop_out=drop_out)
@@ -438,11 +425,10 @@ def get_brains(dataset_path, metadata_path, target_shapes, channels, dic_classes
     max_zoom = 1.1
     scale_dev = max_zoom - 1.0
     # rand_rot_rad = 6 * math.pi / 180
-    
-    # --- HJÄLPFUNKTION FÖR ATT SKAPA MODALITETS-SPECIFIKA TRANSFORMS ---
+
     def get_transform_chain(stage, target_shape):
         """
-        Bygger en Compose-kedja för en specifik modalitet (baserat på dess target_shape).
+        Builds a Compose chain for a specific modality (based on its target_shape).
         """
         if stage == 'train':
             return Compose([
@@ -452,11 +438,11 @@ def get_brains(dataset_path, metadata_path, target_shapes, channels, dic_classes
                 #     rotate_range=(rand_rot_rad, rand_rot_rad, rand_rot_rad),
                 #     translate_range=(rand_shift, rand_shift, rand_shift),
                 #     scale_range=(scale_dev, scale_dev, scale_dev),
-                #     mode='bilinear',       # Snabbare än bicubic
-                #     padding_mode='zeros',  # Fyller tomrum med svart
+                #     mode='bilinear',       # Faster than bicubic
+                #     padding_mode='zeros',  # Fills empty space with black
                 #     spatial_size=target_shape, 
-                #     cache_grid=True # Nu fungerar cachingen korrekt!
-                #     # cache_grid=True        # Snabbar upp beräkningen om input-storleken är konstant
+                #     cache_grid=True # Now the caching works correctly!
+                #     # cache_grid=True        # Speeds up computation if input size is constant
                 # ),
                 # RandRotate(range_x=rand_rot_rad, range_y=rand_rot_rad, range_z=rand_rot_rad, prob=aug_prob),
                 # # RandGaussianNoise(std=0.01, prob=aug_prob),
@@ -470,7 +456,6 @@ def get_brains(dataset_path, metadata_path, target_shapes, channels, dic_classes
                 RepeatChannel(repeats=channels),
             ])
 
-    # --- BYGG TRANSFORMS DICTIONARY (Nested) ---
     # Structure: transforms_dic['train']['mri'] -> Compose(...)
     stages = ['train', 'train_noaug', 'project_noaug', 'val', 'test', 'test_projection']
     transforms_dic = {}
@@ -478,10 +463,10 @@ def get_brains(dataset_path, metadata_path, target_shapes, channels, dic_classes
     for stage in stages:
         transforms_dic[stage] = {}
         for mod in modalities:
-            # Hämta specifik output-storlek för denna modalitet
+            # Get specific output size for this modality
             t_shape = target_shapes[mod]
             
-            # Avgör om det är 'train' (med aug) eller 'noaug'
+            # Determine if it's 'train' (with aug) or 'noaug'
             if stage == 'train' or stage == 'train_normal_augment':
                 transforms_dic[stage][mod] = get_transform_chain('train', t_shape)
             else:
@@ -497,7 +482,7 @@ def get_brains(dataset_path, metadata_path, target_shapes, channels, dic_classes
         current_fold = current_fold,
         test_split = test_split,
         seed = seed,
-        target_shapes = target_shapes, # Skickar med dict istället för tuple
+        target_shapes = target_shapes,
         modalities = modalities,
         mod_shape=mod_shape,
         drop_out=drop_out
@@ -510,18 +495,18 @@ def get_data(args: argparse.Namespace):
 
     mm_df = load_npy_dataset(adni_path=args.dataset_path, classes=list(args.dic_classes.keys()), modalities=args.modalities, seed=args.seed, balanced=args.balanced_modalities)
 
-    # --- NYTT: Beräkna Target Shapes för VARJE modalitet separat ---
+    # Calculate Target Shapes for EACH modality separately
     ds = args.downscaling
     target_shapes = {} # Dict: {'mri': (42, 52, 44), 'amy': (32, 32, 32)}
 
     for mod in args.modalities:
         if mod not in args.mod_shape:
-            print(f"[ERROR] Modalitet {mod} saknas i args.mod_shape config!", flush=True)
+            print(f"[ERROR] Modality {mod} is missing in args.mod_shape config!", flush=True)
             continue
             
-        orig_shape = args.mod_shape[mod] # T.ex. (169, 208, 179)
+        orig_shape = args.mod_shape[mod] # e.g. (169, 208, 179)
         
-        # Beräkna nedskalad storlek
+        # Calculate downscaled size
         new_slices = orig_shape[0] // ds
         new_rows = orig_shape[1] // ds
         new_cols = orig_shape[2] // ds
@@ -530,12 +515,12 @@ def get_data(args: argparse.Namespace):
         
         print(f"[INFO] {mod.upper()} Orig: {orig_shape} -> Target (ds={ds}): {target_shapes[mod]}", flush=True)
 
-    # För bakåtkompatibilitet sätter vi args.img_shape till MRIs shape (används kanske i main-scriptet för logging)
+    # For backward compatibility, we set args.img_shape to MRI's shape (might be used in main script for logging)
     if 'mri' in target_shapes:
         args.img_shape = target_shapes['mri']
         args.slices, args.rows, args.cols = args.img_shape
     else:
-        # Fallback om man kör utan MRI
+        # Fallback if running without MRI
         first_mod = list(target_shapes.keys())[0]
         args.img_shape = target_shapes[first_mod]
     
@@ -546,7 +531,7 @@ def get_data(args: argparse.Namespace):
     return get_brains(
         dataset_path = args.dataset_path,
         metadata_path = args.metadata_path, 
-        target_shapes = target_shapes, # NYTT
+        target_shapes = target_shapes,
         channels = args.channels,
         dic_classes = args.dic_classes,
         n_fold = args.n_fold,
