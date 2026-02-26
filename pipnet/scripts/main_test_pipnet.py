@@ -157,6 +157,7 @@ topks, img_prototype, proto_coord = visualize_topk(
     threshold=args.threshold
     )
 
+
 if args.prune_k_checks:
     print("\n--- ROBUST SPATIAL PRUNING: Top-K (Requires 0 hits for deletion) ---", flush=True)
 
@@ -187,8 +188,22 @@ if args.prune_k_checks:
             images_checked = 0
             best_d, best_h, best_w = 0, 0, 0
             
-            for (img_idx, score) in img_list[:K_TO_CHECK]:
-                xs, _, _ = projectloader.dataset[img_idx]
+            # Change: Iterate over the entire list, not just [:K_TO_CHECK], 
+            # so we can skip missing modalities and keep looking for valid ones.
+            for (img_idx, score) in img_list:
+                
+                # Stop if we've successfully evaluated enough valid images
+                if images_checked >= K_TO_CHECK:
+                    break
+
+                # Extract data AND masks
+                xs, ms, _ = projectloader.dataset[img_idx]
+                
+                # --- NEW: Check if the modality is actually present in this exam ---
+                if ms is not None and mod_key in ms:
+                    if ms[mod_key].item() == 0.0:
+                        continue  # Skip this image, the modality is missing
+                
                 input_dict = {k: v.unsqueeze(0).to(device) for k, v in xs.items()}
                 img_tensor = input_dict[mod_key] 
                 
@@ -210,12 +225,13 @@ if args.prune_k_checks:
                     best_d, best_h, best_w = d, h, w
                     img_shape = img_tensor.shape[2:] # (D, H, W)
                     
+                # Increment only after a valid image has been checked
                 images_checked += 1
 
                 if brain_hits > 0:
                     break
             
-            # --- CHANGE 1: Only prototypes with zero hits are deleted! ---
+            # --- CHANGE 1: Only prototypes with zero hits (on valid images) are deleted! ---
             if brain_hits == 0 and images_checked > 0:
                 pipnet.module._classification.weight[:, prot_idx] = 0.0
                 spatial_zeros.append(prot_idx)
