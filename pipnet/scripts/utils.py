@@ -37,10 +37,10 @@ def get_args(
     #modalities = ['amy']
     modalities = ['mri', 'amy']
 
-    root_folder = "/home/maia-user/PIPNet3D/"
-    #root_folder = "/proj/berzbiomedicalimagingkth/users/x_julwe/PIPNet3D/"
-    dataset_path = "/home/maia-user/ADNI_npy"
-    #dataset_path = "/proj/berzbiomedicalimagingkth/users/x_julwe/ADNI_npy"
+    #root_folder = "/home/maia-user/PIPNet3D/"
+    root_folder = "/proj/berzbiomedicalimagingkth/users/x_julwe/PIPNet3D/"
+    #dataset_path = "/home/maia-user/ADNI_npy"
+    dataset_path = "/proj/berzbiomedicalimagingkth/users/x_julwe/ADNI_npy"
     
     metadata_path = root_folder
     model_path = os.path.join(root_folder, "pipnet", "models")
@@ -55,8 +55,8 @@ def get_args(
     #     mask_path = os.path.join(dataset_path, "masks", mod, "global_mask.npy")
     #     # Save in the dictionary
     #     global_mask_paths[mod] = mask_path
-    n_fold = 3           # Number of folds
-    test_split = 0.3
+    n_fold = 5           # Number of folds
+    test_split = 0.2
     seed = 42            # seed for reproducible shuffling
     
     downscaling = 2
@@ -97,8 +97,6 @@ def get_args(
 
     prune_k_checks = 5
 
-    #bal_text = "bal" if balanced_modalities else "unbal"
-    #model_name = f"{model_name1}_{model_name2}_{bal_text}"
     other = None
     normal = True
 
@@ -121,10 +119,10 @@ def get_args(
         task_performed_name += f"_prune{prune_k_checks}"
     experiment_folder = os.path.join(root_folder, "results", task_performed_name, net, "fold_" + str(current_fold))
     
-    batch_size_pretrain = 2 #16 # 2
-    batch_size = 2 #16 # 2
-    epochs_pretrain = 1 # 10 #10 # 1
-    epochs = 2 # 30 #60 # 2
+    batch_size_pretrain = 12 #16 # 2
+    batch_size = 12 #16 # 2
+    epochs_pretrain = 10 # 10 #10 # 1
+    epochs = 30 # 30 #60 # 2
     optimizer = "Adam"
     lr = 0.05
     lr_age = 0.1
@@ -132,7 +130,7 @@ def get_args(
     lr_net = 0.0001 #0.0005
     weight_decay = 0.1 #0.0
     num_features = int(512/2) #0
-    freeze_epochs = 1 # 3 # 10 #10 # 1
+    freeze_epochs = 10 # 3 # 10 #10 # 1
     gamma = 0.1             # LR's decay factor
     step_size = 7           # LR's frequency decay
     num_workers = 8
